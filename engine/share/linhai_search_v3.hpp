@@ -142,6 +142,7 @@ private:
     V3LinearModel ryukyoku_model_;
     boost::unordered_map<std::size_t, float> future_cache_;
     boost::unordered_map<std::size_t, SearchResult> discard_cache_;
+    boost::unordered_map<std::size_t, int> shanten_cache_;
     int cache_hits_ = 0;
     std::chrono::steady_clock::time_point search_deadline_;
     bool deadline_enabled_ = false;
@@ -151,6 +152,7 @@ private:
     std::string truncate_reason_;
 
     SearchResult make_fallback_result(const std::string& reason) const;
+    int cached_shanten(const Hai_Array& tehai);
     SearchResult search_discard_once(CanonicalGameState& state, int depth);
     float evaluate_future_draws(CanonicalGameState state, int depth, int& nodes_expanded);
     std::vector<SearchCandidate> build_discard_candidates(const CanonicalGameState& state);
