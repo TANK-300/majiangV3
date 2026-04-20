@@ -18,6 +18,21 @@ from backend.app.core.tiles import Honor, Suit, all_tile_codes, normalize_code, 
 ALL_TILE_CODES = sorted(all_tile_codes())
 WIND_ORDER = ["east", "south", "west", "north"]
 
+# A-2a: per-tile features. We emit one entry per tile in a STABLE ordering so
+# the feature names match exactly between the Python trainer and the C++
+# search-engine inference path. The names here map 1:1 to the keys produced
+# by `LinhaiSearchEngineV3::build_state_features()` in
+# engine/share/linhai_search_v3.cpp.
+PER_TILE_FEATURE_ORDER: List[str] = (
+    [f"{rank}w" for rank in range(1, 10)]
+    + [f"{rank}t" for rank in range(1, 10)]
+    + ["east", "south", "west", "north", "white", "green", "red"]
+)
+
+
+def _feature_key_for_tile(prefix: str, tile_code: str) -> str:
+    return f"{prefix}_{tile_code}"
+
 
 def normalize_tiles(tiles: Optional[Iterable[str]]) -> List[str]:
     return [normalize_code(tile) for tile in (tiles or [])]
@@ -150,6 +165,7 @@ def build_model_features(
     contract_target_count: int,
     opponent_meld_count: int,
     opponent_discard_count: int,
+    opponent_discards: Optional[List[str]] = None,
 ) -> Dict[str, float]:
     hand_counts = active_player["hand_counts"]
     hand_size = len(active_player["hand"])
@@ -209,7 +225,20 @@ def build_model_features(
             target_is_terminal = 1.0 if target_rank in {1, 9} else 0.0
 
     action_set = set(available_actions)
-    return {
+    opponent_discard_counts: Dict[str, int] = {code: 0 for code in ALL_TILE_CODES}
+    for tile in opponent_discards or []:
+        opponent_discard_counts[tile] = opponent_discard_counts.get(tile, 0) + 1
+
+    # A-2a: expose per-tile hand / remaining / opponent-discard counts so the
+    # downstream linear/GBDT model can actually see WHICH tile we're holding or
+    # throwing, not just aggregate counts.
+    per_tile_features: Dict[str, float] = {}
+    for tile_code in PER_TILE_FEATURE_ORDER:
+        per_tile_features[_feature_key_for_tile("hand_t", tile_code)] = float(hand_counts.get(tile_code, 0))
+        per_tile_features[_feature_key_for_tile("remain_t", tile_code)] = float(remaining_counts.get(tile_code, 0))
+        per_tile_features[_feature_key_for_tile("opp_disc_t", tile_code)] = float(opponent_discard_counts.get(tile_code, 0))
+
+    aggregate = {
         "wall_remaining": float(wall_remaining),
         "from_player": float(from_player),
         "has_target_hai": 1.0 if target_code else 0.0,
@@ -250,6 +279,9 @@ def build_model_features(
         "can_gang": 1.0 if "gang" in action_set else 0.0,
         "can_hu": 1.0 if "hu" in action_set else 0.0,
     }
+
+    aggregate.update(per_tile_features)
+    return aggregate
 
 
 def build_canonical_record(payload: Dict, record_index: int) -> Dict:
@@ -302,6 +334,7 @@ def build_canonical_record(payload: Dict, record_index: int) -> Dict:
         contract_target_count=len(contract_targets),
         opponent_meld_count=opponent_meld_count,
         opponent_discard_count=opponent_discard_count,
+        opponent_discards=opponent_discards,
     )
     canonical = {
         "record_id": payload.get("record_id", f"record-{record_index:06d}"),
