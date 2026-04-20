@@ -1,4 +1,5 @@
 #include "linhai_search_v3.hpp"
+#include "linhai_shanten_v4.hpp"
 
 #include <algorithm>
 #include <fstream>
@@ -125,27 +126,11 @@ int estimate_ukeire_after_discard(const Hai_Array& tehai, const Hai_Array& remai
     return total;
 }
 
+// Deprecated under A-1: kept only as a last-resort fallback wrapper.
+// All in-search call sites now use LinhaiSearchEngineV3::cached_shanten(),
+// which delegates to the exact calc_linhai_shanten() with memoization.
 int estimate_fast_shanten(const Hai_Array& tehai) {
-    int meld_like = 0;
-    int pair_like = 0;
-    for (int i = 0; i < LINHAI_VALID_TILE_COUNT; i++) {
-        int hai = LINHAI_VALID_TILES[i];
-        if (tehai[hai] >= 3) {
-            meld_like += 2;
-        } else if (tehai[hai] == 2) {
-            pair_like += 1;
-        }
-        if (is_suited_tile(hai) && tehai[hai] > 0) {
-            if (hai + 1 < 38 && tehai[hai + 1] > 0) {
-                meld_like += 1;
-            }
-            if (hai + 2 < 38 && tehai[hai + 2] > 0) {
-                meld_like += 1;
-            }
-        }
-    }
-    int estimate = 6 - std::min(4, meld_like / 2) - std::min(1, pair_like);
-    return std::max(0, estimate);
+    return calc_linhai_shanten(tehai);
 }
 
 bool is_wind_tile(int hai) {
@@ -174,6 +159,7 @@ LinhaiSearchEngineV3::LinhaiSearchEngineV3() : config_(), model_bundle_(), last_
 void LinhaiSearchEngineV3::reset_search_cache() {
     future_cache_.clear();
     discard_cache_.clear();
+    shanten_cache_.clear();
     cache_hits_ = 0;
     deadline_enabled_ = false;
     node_budget_limit_ = -1;
@@ -638,6 +624,20 @@ SearchResult LinhaiSearchEngineV3::make_fallback_result(const std::string& reaso
     return result;
 }
 
+int LinhaiSearchEngineV3::cached_shanten(const Hai_Array& tehai) {
+    std::size_t seed = 0xcbf29ce484222325ULL;
+    for (int hai = 1; hai < 38; hai++) {
+        hash_combine(seed, static_cast<std::size_t>(tehai[hai]));
+    }
+    auto it = shanten_cache_.find(seed);
+    if (it != shanten_cache_.end()) {
+        return it->second;
+    }
+    const int shanten = calc_linhai_shanten(tehai);
+    shanten_cache_[seed] = shanten;
+    return shanten;
+}
+
 void LinhaiSearchEngineV3::apply_context(CanonicalGameState& state) {
     state.refresh_counts();
     fallback_engine_.set_opponent_discards(state.opponent_discards);
@@ -656,7 +656,11 @@ std::vector<SearchCandidate> LinhaiSearchEngineV3::build_discard_candidates(cons
         seen.insert(hai);
         Hai_Array after = game_state.tehai;
         after[hai] -= 1;
-        int shanten_after = estimate_fast_shanten(after);
+        // A-1: use exact linhai shanten (cached) instead of the fast-but-wrong
+        // estimate. The fast estimator could be off by multiple shanten in
+        // real hands, which systematically biases every downstream EV term
+        // (total_ev, tenpai_prob, tsumo_num, ...).
+        int shanten_after = cached_shanten(after);
         int ukeire = estimate_ukeire_after_discard(after, remaining);
         bool safe = is_safe_against_discards(state.opponent_discards, hai);
         int support = tile_connectivity(game_state.tehai, hai);
@@ -785,31 +789,72 @@ float LinhaiSearchEngineV3::evaluate_future_draws(CanonicalGameState state, int 
         return empty_pool_value;
     }
 
-    float weighted = 0.0f;
-    int beam = depth > 1 ? config_.beam_width_after_draw : config_.beam_width_far_shanten;
-    int used = 0;
-    for (int i = 0; i < LINHAI_VALID_TILE_COUNT && used < beam; i++) {
-        if (is_search_budget_exceeded()) {
-            break;
-        }
-        int hai = LINHAI_VALID_TILES[i];
-        int remain = state.remaining_counts[hai];
+    // A-1: probability-mass-preserving chance integration.
+    //
+    // Before: we walked the tile list in index order, stopped after `beam`
+    // matches, and divided partial contributions by the *full* remaining count.
+    // That made `evaluate_future_draws` systematically under-estimate EV, and
+    // different subtrees would truncate at different points -> non-comparable.
+    //
+    // Now: we rank candidate draw tiles by remaining count (largest first),
+    // process as many as budget allows, and extrapolate the untaken
+    // probability mass using the weighted average of the observed future_best
+    // values. This keeps the integral unbiased (E[future_best] matches the
+    // sampled tiles' average) while still respecting the search budget.
+    struct DrawChoice { int hai; int remain; };
+    std::vector<DrawChoice> draws;
+    draws.reserve(LINHAI_VALID_TILE_COUNT);
+    for (int i = 0; i < LINHAI_VALID_TILE_COUNT; i++) {
+        const int hai = LINHAI_VALID_TILES[i];
+        const int remain = state.remaining_counts[hai];
         if (remain <= 0) {
             continue;
         }
+        draws.push_back({hai, remain});
+    }
+    std::sort(draws.begin(), draws.end(), [](const DrawChoice& a, const DrawChoice& b) {
+        if (a.remain != b.remain) {
+            return a.remain > b.remain;
+        }
+        return a.hai < b.hai;
+    });
+
+    const int beam = depth > 1 ? config_.beam_width_after_draw : config_.beam_width_far_shanten;
+    const int limit = std::max(1, beam);
+    float weighted = 0.0f;
+    float covered_probability = 0.0f;
+    int used = 0;
+    for (const auto& draw : draws) {
+        if (used >= limit) {
+            break;
+        }
+        if (is_search_budget_exceeded()) {
+            break;
+        }
 
         CanonicalGameState next = state;
-        next.game_state.tehai[hai] += 1;
+        next.game_state.tehai[draw.hai] += 1;
         next.white_tiles_in_hand = next.game_state.tehai[35];
         next.game_state.wall_remaining = std::max(0, next.game_state.wall_remaining - 1);
-        next.remaining_counts[hai] = std::max(0, next.remaining_counts[hai] - 1);
+        next.remaining_counts[draw.hai] = std::max(0, next.remaining_counts[draw.hai] - 1);
 
         auto recs = build_discard_candidates(next);
-        float future_best = recs.empty() ? 0.0f : recs.front().total_ev;
-        weighted += (static_cast<float>(remain) / static_cast<float>(total_remaining)) * future_best;
+        const float future_best = recs.empty() ? 0.0f : recs.front().total_ev;
+        const float probability = static_cast<float>(draw.remain) / static_cast<float>(total_remaining);
+        weighted += probability * future_best;
+        covered_probability += probability;
         add_search_nodes(1);
         nodes_expanded += 1;
         used += 1;
+    }
+
+    if (covered_probability > 0.0f && covered_probability < 1.0f) {
+        // Extrapolate the uncovered probability mass using the sampled mean.
+        // This is the unbiased estimator under the assumption that the
+        // remaining draws look "similar on average" to the sampled ones,
+        // which is a much better approximation than treating them as zero.
+        const float mean_future = weighted / covered_probability;
+        weighted += (1.0f - covered_probability) * mean_future;
     }
     future_cache_[cache_key] = weighted;
     return weighted;
@@ -892,7 +937,8 @@ SearchResult LinhaiSearchEngineV3::search_discard_once(CanonicalGameState& state
 std::vector<SearchCandidate> LinhaiSearchEngineV3::build_response_candidates(const CanonicalGameState& state, int& nodes_expanded) {
     std::vector<SearchCandidate> candidates;
     const Hai_Array& tehai = state.game_state.tehai;
-    int current_shanten = estimate_fast_shanten(tehai);
+    // A-1: use exact shanten so response-mode depth picking is correct.
+    int current_shanten = cached_shanten(tehai);
     int response_depth = choose_draw_depth(config_, current_shanten);
 
     auto append_followup_discard = [&](
@@ -1032,6 +1078,32 @@ std::vector<SearchCandidate> LinhaiSearchEngineV3::build_response_candidates(con
             return;
         }
 
+        // A-1: preserve probability mass on the beam-truncated tail.
+        // Originally we dropped uncovered mass silently, which biased `weighted_*`
+        // against long-tail draws AND broke comparability across actions
+        // whose chance trees happen to have different uncovered mass.
+        // Here we extrapolate the uncovered mass using the sampled average
+        // (unbiased estimator given no further information).
+        if (used_probability < 1.0f) {
+            const float uncovered = 1.0f - used_probability;
+            const float mean_total_ev = weighted_total_ev / used_probability;
+            const float mean_agari = weighted_agari_prob / used_probability;
+            const float mean_houjuu = weighted_houjuu_prob / used_probability;
+            const float mean_tenpai = weighted_tenpai_prob / used_probability;
+            const float mean_betaori = weighted_betaori_prob / used_probability;
+            const float mean_tsumo = weighted_tsumo_num / used_probability;
+            const float mean_ryukyoku = weighted_ryukyoku_prob / used_probability;
+            const float mean_defense = weighted_defense_score / used_probability;
+            weighted_total_ev += uncovered * mean_total_ev;
+            weighted_agari_prob += uncovered * mean_agari;
+            weighted_houjuu_prob += uncovered * mean_houjuu;
+            weighted_tenpai_prob += uncovered * mean_tenpai;
+            weighted_betaori_prob += uncovered * mean_betaori;
+            weighted_tsumo_num += uncovered * mean_tsumo;
+            weighted_ryukyoku_prob += uncovered * mean_ryukyoku;
+            weighted_defense_score += uncovered * mean_defense;
+        }
+
         int best_discard = 0;
         float best_discard_score = -1e30f;
         for (int hai = 1; hai < 38; hai++) {
@@ -1059,7 +1131,7 @@ std::vector<SearchCandidate> LinhaiSearchEngineV3::build_response_candidates(con
         c.total_ev += (c.betaori_prob - weighted_betaori_prob) * 250.0f;
         c.total_ev -= (c.tsumo_num - weighted_tsumo_num) * 10.0f;
         c.total_ev -= (c.ryukyoku_prob - weighted_ryukyoku_prob) * 180.0f;
-        c.shanten = estimate_fast_shanten(next_state.game_state.tehai);
+        c.shanten = cached_shanten(next_state.game_state.tehai);
         c.search_depth = response_depth + 1;
         c.explanation = explanation_prefix;
         if (best_discard > 0) {
