@@ -1,0 +1,23 @@
+{
+  "task": "tsumo_num",
+  "created_at": "2026-04-20T12:33:04.578217+00:00",
+  "status": "trained",
+  "label_key": "source_meta.tsumo_num_label",
+  "dataset": {
+    "dataset_path": "data/samples_v1.jsonl",
+    "total_records": 50813,
+    "records_with_task_labels": 50813,
+    "label_key_counts": {
+      "best_discard_tile": 50813,
+      "can_win_label": 50813
+    }
+  },
+  "trained_examples": 50813,
+  "skipped_records": 0,
+  "model_file": "engine/params/v3/tsumo_num/model.json",
+  "model_type": "linear_regression",
+  "metrics": {
+    "train_r2": 0.2970944689462316,
+    "val_r2": 0.2927811071601826
+  }
+}

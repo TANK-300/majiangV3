@@ -6,8 +6,12 @@ import sys
 from pathlib import Path
 
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+TOOLS_DIR = REPO_ROOT / "tools"
+
+
 def test_extract_canonical_states_outputs_normalized_record(tmp_path: Path) -> None:
-    tool = Path("/Users/wf/Documents/wb/linhai-majiang-v3/tools/extract_canonical_states.py")
+    tool = TOOLS_DIR / "extract_canonical_states.py"
     source = tmp_path / "states.jsonl"
     target = tmp_path / "canonical.jsonl"
     source.write_text(
@@ -79,10 +83,24 @@ def test_extract_canonical_states_outputs_normalized_record(tmp_path: Path) -> N
     assert row["model_features"]["target_in_hand_count"] == 2.0
     assert row["model_features"]["target_rank"] == 3.0
     assert row["model_features"]["target_is_honor"] == 0.0
+    # A-2a: per-tile features. The east seat's hand is
+    # ["1w", "2w", "3w", "3w", "white", "east"] plus 1 peng meld "5w 5w 5w",
+    # so hand_t_3w=2, hand_t_white=1, hand_t_east=1. The south opponent has
+    # discarded ["1w", "east"], so opp_disc_t_1w=1, opp_disc_t_east=1.
+    features = row["model_features"]
+    assert features["hand_t_1w"] == 1.0
+    assert features["hand_t_3w"] == 2.0
+    assert features["hand_t_white"] == 1.0
+    assert features["hand_t_east"] == 1.0
+    assert features["opp_disc_t_1w"] == 1.0
+    assert features["opp_disc_t_east"] == 1.0
+    assert features["opp_disc_t_south"] == 0.0
+    # remain_t is 4 - visible; white is in hand once and not discarded -> 3.
+    assert features["remain_t_white"] == 3.0
 
 
 def test_train_model_stub_creates_metadata(tmp_path: Path) -> None:
-    tool = Path("/Users/wf/Documents/wb/linhai-majiang-v3/tools/train_model_stub.py")
+    tool = TOOLS_DIR / "train_model_stub.py"
     target = tmp_path / "params"
     subprocess.check_call([sys.executable, str(tool), "--task", "agari_prob", "--version-dir", str(target)])
     meta = target / "v3" / "agari_prob" / "model_meta.json"
@@ -92,7 +110,7 @@ def test_train_model_stub_creates_metadata(tmp_path: Path) -> None:
 
 
 def test_train_model_stub_summarizes_dataset(tmp_path: Path) -> None:
-    tool = Path("/Users/wf/Documents/wb/linhai-majiang-v3/tools/train_model_stub.py")
+    tool = TOOLS_DIR / "train_model_stub.py"
     target = tmp_path / "params"
     dataset = tmp_path / "canonical.jsonl"
     dataset.write_text(
@@ -157,7 +175,7 @@ def test_train_model_stub_summarizes_dataset(tmp_path: Path) -> None:
 
 
 def test_train_model_stub_supports_explicit_label_key(tmp_path: Path) -> None:
-    tool = Path("/Users/wf/Documents/wb/linhai-majiang-v3/tools/train_model_stub.py")
+    tool = TOOLS_DIR / "train_model_stub.py"
     target = tmp_path / "params"
     dataset = tmp_path / "canonical.jsonl"
     dataset.write_text(
@@ -222,7 +240,7 @@ def test_train_model_stub_supports_explicit_label_key(tmp_path: Path) -> None:
 
 
 def test_eval_search_compares_predictions_against_labels(tmp_path: Path) -> None:
-    tool = Path("/Users/wf/Documents/wb/linhai-majiang-v3/tools/eval_search.py")
+    tool = TOOLS_DIR / "eval_search.py"
     labels = tmp_path / "labels.jsonl"
     predictions = tmp_path / "predictions.jsonl"
     labels.write_text(

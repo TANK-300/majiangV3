@@ -3,42 +3,148 @@ from __future__ import annotations
 import importlib
 import os
 import sys
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from ..core.state import GameState, Wind
 from ..core.tiles import normalize_code
 
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _unique_existing_dirs(paths: List[Path]) -> List[Path]:
+    seen: List[Path] = []
+    for path in paths:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if not resolved.is_dir():
+            continue
+        if resolved in seen:
+            continue
+        seen.append(resolved)
+    return seen
+
+
+def _candidate_module_dirs() -> List[Path]:
+    env_override = os.environ.get("LINHAI_V3_ENGINE_MODULE_DIR")
+    candidates: List[Path] = []
+    if env_override:
+        candidates.extend(Path(item) for item in env_override.split(os.pathsep) if item.strip())
+    candidates.extend(
+        [
+            REPO_ROOT / "engine",
+            REPO_ROOT / "engine" / "build",
+            REPO_ROOT / "backend",
+            # Legacy macOS dev paths kept only as last resort for back-compat.
+            Path("/Users/wf/Documents/wb/linhai-majiang-v3/engine"),
+            Path("/Users/wf/Documents/wb/linhai-majiang-v3/backend"),
+        ]
+    )
+    return _unique_existing_dirs(candidates)
+
+
+def _candidate_params_dirs() -> List[Path]:
+    env_override = os.environ.get("LINHAI_V3_PARAMS_DIR")
+    candidates: List[Path] = []
+    if env_override:
+        candidates.extend(Path(item) for item in env_override.split(os.pathsep) if item.strip())
+    candidates.extend(
+        [
+            REPO_ROOT / "engine" / "params",
+            Path("/Users/wf/Documents/wb/linhai-majiang-v3/engine/params"),
+        ]
+    )
+    return _unique_existing_dirs(candidates)
+
+
 class V3SearchService:
     def __init__(self) -> None:
         self._mod = None
         self._engine = None
+        self._load_reason: str = "not_attempted"
+        self._module_dir: Optional[Path] = None
+        self._params_dir: Optional[Path] = None
         self._load()
 
     def available(self) -> bool:
         return self._engine is not None
 
+    def status(self) -> Dict[str, object]:
+        return {
+            "available": self.available(),
+            "reason": self._load_reason,
+            "module_dir": str(self._module_dir) if self._module_dir else None,
+            "params_dir": str(self._params_dir) if self._params_dir else None,
+            "profile": getattr(self, "_profile", None),
+        }
+
     def _load(self) -> None:
-        candidate_paths = [
-            "/Users/wf/Documents/wb/linhai-majiang-v3/backend",
-            "/Users/wf/Documents/wb/linhai-majiang-v3/engine",
-        ]
-        for path in candidate_paths:
-            if path not in sys.path:
-                sys.path.insert(0, path)
+        for path in _candidate_module_dirs():
+            if str(path) not in sys.path:
+                sys.path.insert(0, str(path))
         try:
             self._mod = importlib.import_module("linhai_v3")
+        except ImportError as exc:
+            self._load_reason = f"import_failed:{exc}"
+            self._mod = None
+            self._engine = None
+            return
+        except Exception as exc:
+            self._load_reason = f"import_exception:{exc}"
+            self._mod = None
+            self._engine = None
+            return
+        self._module_dir = Path(getattr(self._mod, "__file__", "")).resolve().parent if getattr(self._mod, "__file__", None) else None
+        try:
             self._engine = self._mod.LinhaiSearchEngineV3()
             cfg = self._mod.SearchConfig()
-            cfg.max_self_draw_depth = 1
-            cfg.deep_depth_for_near_ready = 2
-            cfg.beam_width_after_draw = 2
-            cfg.beam_width_far_shanten = 1
+            # A-1 hotfix: honour LINHAI_V3_FAST so bulk selfplay / regression
+            # jobs can trade a little strength for a LOT of throughput. On
+            # hands with multiple whites the default (depth=2) is ~50ms per
+            # step; the fast profile brings that down to <5ms.
+            #
+            # "fast" -> zero-lookahead EV; "prod" (default) -> 1-step
+            # self-draw + depth 2 on near-ready; "deep" -> same as prod but
+            # with wider beams for benchmark runs.
+            profile = os.environ.get("LINHAI_V3_PROFILE", "prod").strip().lower()
+            if os.environ.get("LINHAI_V3_FAST", "") not in {"", "0", "false", "no"}:
+                profile = "fast"
+            if profile == "fast":
+                cfg.max_self_draw_depth = 0
+                cfg.deep_depth_for_near_ready = 0
+                cfg.beam_width_after_draw = 1
+                cfg.beam_width_far_shanten = 1
+                cfg.time_budget_ms_discard = 15
+                cfg.time_budget_ms_response = 15
+            elif profile == "deep":
+                cfg.max_self_draw_depth = 2
+                cfg.deep_depth_for_near_ready = 3
+                cfg.beam_width_after_draw = 4
+                cfg.beam_width_far_shanten = 2
+            else:  # "prod"
+                cfg.max_self_draw_depth = 1
+                cfg.deep_depth_for_near_ready = 2
+                cfg.beam_width_after_draw = 2
+                cfg.beam_width_far_shanten = 1
+            self._profile = profile
             self._engine.set_search_config(cfg)
-            params_dir = "/Users/wf/Documents/wb/linhai-majiang-v3/engine/params"
-            if os.path.isdir(params_dir):
-                self._engine.load_model_bundle(params_dir)
-        except Exception:
+            params_dirs = _candidate_params_dirs()
+            loaded_params = False
+            for params_dir in params_dirs:
+                if (params_dir / "agari_prob" / "linhai").is_dir() or (params_dir / "v3").is_dir():
+                    self._engine.load_model_bundle(str(params_dir))
+                    self._params_dir = params_dir
+                    loaded_params = True
+                    break
+            if loaded_params:
+                self._load_reason = "ok"
+            else:
+                self._load_reason = "params_not_found"
+        except Exception as exc:
+            self._load_reason = f"engine_init_failed:{exc}"
             self._mod = None
             self._engine = None
 

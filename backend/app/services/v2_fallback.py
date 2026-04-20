@@ -3,10 +3,60 @@ from __future__ import annotations
 import importlib
 import os
 import sys
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from ..core.state import GameState, Wind
 from ..core.tiles import normalize_code
+
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _unique_existing_dirs(paths: List[Path]) -> List[Path]:
+    seen: List[Path] = []
+    for path in paths:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if not resolved.is_dir():
+            continue
+        if resolved in seen:
+            continue
+        seen.append(resolved)
+    return seen
+
+
+def _candidate_v2_module_dirs() -> List[Path]:
+    env_override = os.environ.get("LINHAI_V2_MODULE_DIR")
+    candidates: List[Path] = []
+    if env_override:
+        candidates.extend(Path(item) for item in env_override.split(os.pathsep) if item.strip())
+    candidates.extend(
+        [
+            REPO_ROOT / "engine",
+            REPO_ROOT / "engine" / "build",
+            REPO_ROOT / "backend",
+            Path("/Users/wf/Documents/wb/linhai-majiang-v2/majiang-linhai-ai/backend"),
+        ]
+    )
+    return _unique_existing_dirs(candidates)
+
+
+def _candidate_v2_params_dirs() -> List[Path]:
+    env_override = os.environ.get("LINHAI_V2_PARAMS_DIR")
+    candidates: List[Path] = []
+    if env_override:
+        candidates.extend(Path(item) for item in env_override.split(os.pathsep) if item.strip())
+    candidates.extend(
+        [
+            REPO_ROOT / "engine" / "params",
+            Path("/Users/wf/Documents/wb/linhai-majiang-v2/akochan/params/"),
+            Path("/Users/wf/Documents/wb/akochan/params/"),
+        ]
+    )
+    return _unique_existing_dirs(candidates)
 
 
 class V2FallbackAdapter:
@@ -15,28 +65,52 @@ class V2FallbackAdapter:
     def __init__(self) -> None:
         self._mod = None
         self._engine = None
+        self._load_reason: str = "not_attempted"
+        self._module_dir: Optional[Path] = None
+        self._params_dir: Optional[Path] = None
         self._load()
 
     def available(self) -> bool:
         return self._engine is not None
 
+    def status(self) -> Dict[str, object]:
+        return {
+            "available": self.available(),
+            "reason": self._load_reason,
+            "module_dir": str(self._module_dir) if self._module_dir else None,
+            "params_dir": str(self._params_dir) if self._params_dir else None,
+        }
+
     def _load(self) -> None:
-        module_dir = "/Users/wf/Documents/wb/linhai-majiang-v2/majiang-linhai-ai/backend"
-        if module_dir not in sys.path:
-            sys.path.insert(0, module_dir)
+        for path in _candidate_v2_module_dirs():
+            if str(path) not in sys.path:
+                sys.path.insert(0, str(path))
         try:
             self._mod = importlib.import_module("linhai_ai")
+        except ImportError as exc:
+            self._load_reason = f"import_failed:{exc}"
+            self._mod = None
+            self._engine = None
+            return
+        except Exception as exc:
+            self._load_reason = f"import_exception:{exc}"
+            self._mod = None
+            self._engine = None
+            return
+        self._module_dir = Path(getattr(self._mod, "__file__", "")).resolve().parent if getattr(self._mod, "__file__", None) else None
+        try:
             self._engine = self._mod.LinHaiEVEngine()
-            params_dirs = [
-                "/Users/wf/Documents/wb/linhai-majiang-v2/akochan/params/",
-                "/Users/wf/Documents/wb/akochan/params/",
-            ]
-            for path in params_dirs:
-                if os.path.isdir(os.path.join(path, "agari_prob", "linhai")):
-                    self._engine.load_params(path)
+            loaded_params = False
+            for path in _candidate_v2_params_dirs():
+                if (path / "agari_prob" / "linhai").is_dir():
+                    self._engine.load_params(str(path) + os.sep)
                     if self._engine.params_loaded():
+                        self._params_dir = path
+                        loaded_params = True
                         break
-        except Exception:
+            self._load_reason = "ok" if loaded_params else "params_not_found"
+        except Exception as exc:
+            self._load_reason = f"engine_init_failed:{exc}"
             self._mod = None
             self._engine = None
 
