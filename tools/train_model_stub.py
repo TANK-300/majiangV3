@@ -250,22 +250,109 @@ def fit_linear_regression(
     }
 
 
+def _try_train_with_sklearn(
+    x_rows: Sequence[Sequence[float]],
+    labels: Sequence[float],
+    is_binary: bool,
+    l2: float,
+    validation_split: float,
+) -> Optional[Dict]:
+    """Train with scikit-learn if available, returning a payload compatible
+    with the stub structure. Falls back to None so callers use the hand-rolled
+    implementation for environments without sklearn.
+
+    A-2a: the fitter here is the *same family* of model (logistic / ridge
+    linear regression) that the C++ V3LinearModel loader expects, so the
+    model.json emitted remains binary-compatible with the existing search
+    engine -- but we get proper L2, convergence, and train/val metrics instead
+    of the toy hand-rolled SGD.
+    """
+    try:
+        from sklearn.linear_model import LogisticRegression, Ridge  # type: ignore
+        from sklearn.model_selection import train_test_split  # type: ignore
+    except Exception:
+        return None
+
+    x_array: List[List[float]] = [list(row) for row in x_rows]
+    y_array: List[float] = [float(v) for v in labels]
+
+    if validation_split > 0.0 and len(y_array) >= 4:
+        x_train, x_val, y_train, y_val = train_test_split(
+            x_array,
+            y_array,
+            test_size=validation_split,
+            random_state=0,
+            stratify=y_array if is_binary and len(set(y_array)) == 2 else None,
+        )
+    else:
+        x_train, x_val = x_array, []
+        y_train, y_val = y_array, []
+
+    metrics: Dict[str, float] = {}
+
+    if is_binary:
+        # A-2a: sklearn LogisticRegression requires >= 2 classes in y_train.
+        # Tiny unit-test datasets or severely skewed real datasets can violate
+        # that, so we degrade to the hand-rolled estimator in that case
+        # (it silently clamps to the majority class prior, which is fine for
+        # a smoke-level "model exists" guarantee).
+        if len(set(y_train)) < 2:
+            return None
+        model = LogisticRegression(
+            C=(1.0 / l2) if l2 > 0 else 1.0,
+            max_iter=1000,
+            solver="lbfgs",
+        )
+        model.fit(x_train, y_train)
+        intercept = float(model.intercept_[0])
+        weights = [float(w) for w in model.coef_[0]]
+        model_type = "logistic_regression"
+        metrics["train_accuracy"] = float(model.score(x_train, y_train))
+        if x_val:
+            metrics["val_accuracy"] = float(model.score(x_val, y_val))
+    else:
+        model = Ridge(alpha=max(l2, 1e-6))
+        model.fit(x_train, y_train)
+        intercept = float(model.intercept_)
+        weights = [float(w) for w in model.coef_]
+        model_type = "linear_regression"
+        metrics["train_r2"] = float(model.score(x_train, y_train))
+        if x_val:
+            metrics["val_r2"] = float(model.score(x_val, y_val))
+
+    return {
+        "model_type": model_type,
+        "intercept": intercept,
+        "weights": weights,
+        "metrics": metrics,
+        "_fitter": "sklearn",
+    }
+
+
 def train_model(
     rows: Sequence[Dict[str, float]],
     labels: Sequence[float],
     learning_rate: float,
     epochs: int,
     l2: float,
+    validation_split: float = 0.0,
 ) -> Dict:
     feature_names = collect_feature_names(rows)
     means, stds = compute_scaler(rows, feature_names)
     x_rows = vectorize_rows(rows, feature_names, means, stds)
     is_binary = all(label in {0.0, 1.0} for label in labels)
 
-    if is_binary:
+    sk_fit = _try_train_with_sklearn(x_rows, labels, is_binary, l2, validation_split)
+    if sk_fit is not None:
+        fitted = sk_fit
+    elif is_binary:
         fitted = fit_logistic_regression(x_rows, labels, learning_rate, epochs, l2)
+        fitted["_fitter"] = "handrolled"
     else:
         fitted = fit_linear_regression(x_rows, labels, learning_rate, epochs, l2)
+        fitted["_fitter"] = "handrolled"
+
+    fitter = fitted.pop("_fitter", "handrolled")
 
     return {
         **fitted,
@@ -273,6 +360,7 @@ def train_model(
         "feature_means": means,
         "feature_stds": stds,
         "training_examples": len(labels),
+        "fitter": fitter,
     }
 
 
@@ -297,6 +385,12 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--learning-rate", type=float, default=0.05)
     parser.add_argument("--l2", type=float, default=0.001)
+    parser.add_argument(
+        "--validation-split",
+        type=float,
+        default=0.0,
+        help="Fraction of rows held out for validation metrics (sklearn path only).",
+    )
     args = parser.parse_args()
 
     output_dir = Path(args.version_dir) / "v3" / args.task
@@ -323,7 +417,14 @@ def main() -> None:
         print(json.dumps({"created": str(output_dir / "model_meta.json"), "status": metadata["status"]}, ensure_ascii=False))
         return
 
-    trained_model = train_model(rows, labels, args.learning_rate, args.epochs, args.l2)
+    trained_model = train_model(
+        rows,
+        labels,
+        args.learning_rate,
+        args.epochs,
+        args.l2,
+        validation_split=args.validation_split,
+    )
     model_payload = {
         "task": args.task,
         "label_key": label_key,

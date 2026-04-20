@@ -83,6 +83,20 @@ def test_extract_canonical_states_outputs_normalized_record(tmp_path: Path) -> N
     assert row["model_features"]["target_in_hand_count"] == 2.0
     assert row["model_features"]["target_rank"] == 3.0
     assert row["model_features"]["target_is_honor"] == 0.0
+    # A-2a: per-tile features. The east seat's hand is
+    # ["1w", "2w", "3w", "3w", "white", "east"] plus 1 peng meld "5w 5w 5w",
+    # so hand_t_3w=2, hand_t_white=1, hand_t_east=1. The south opponent has
+    # discarded ["1w", "east"], so opp_disc_t_1w=1, opp_disc_t_east=1.
+    features = row["model_features"]
+    assert features["hand_t_1w"] == 1.0
+    assert features["hand_t_3w"] == 2.0
+    assert features["hand_t_white"] == 1.0
+    assert features["hand_t_east"] == 1.0
+    assert features["opp_disc_t_1w"] == 1.0
+    assert features["opp_disc_t_east"] == 1.0
+    assert features["opp_disc_t_south"] == 0.0
+    # remain_t is 4 - visible; white is in hand once and not discarded -> 3.
+    assert features["remain_t_white"] == 3.0
 
 
 def test_train_model_stub_creates_metadata(tmp_path: Path) -> None:

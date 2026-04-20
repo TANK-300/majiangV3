@@ -141,6 +141,24 @@ bool is_dragon_tile(int hai) {
     return hai >= 35 && hai <= 37;
 }
 
+// A-2a: stable tile-id -> human-readable code map. The names here MUST match
+// exactly the names emitted by tools/extract_canonical_states.py and
+// PER_TILE_FEATURE_ORDER, otherwise the model weights will be silently
+// misaligned between training and inference.
+const char* tile_code_for_feature(int hai) {
+    switch (hai) {
+        case 1:  return "1w"; case 2:  return "2w"; case 3:  return "3w";
+        case 4:  return "4w"; case 5:  return "5w"; case 6:  return "6w";
+        case 7:  return "7w"; case 8:  return "8w"; case 9:  return "9w";
+        case 21: return "1t"; case 22: return "2t"; case 23: return "3t";
+        case 24: return "4t"; case 25: return "5t"; case 26: return "6t";
+        case 27: return "7t"; case 28: return "8t"; case 29: return "9t";
+        case 31: return "east"; case 32: return "south"; case 33: return "west"; case 34: return "north";
+        case 35: return "white"; case 36: return "green"; case 37: return "red";
+        default: return nullptr;
+    }
+}
+
 } // namespace
 
 void CanonicalGameState::refresh_counts() {
@@ -458,6 +476,26 @@ std::unordered_map<std::string, float> LinhaiSearchEngineV3::build_state_feature
     features["can_chi"] = has_action("chi") ? 1.0f : 0.0f;
     features["can_gang"] = has_action("gang") ? 1.0f : 0.0f;
     features["can_hu"] = has_action("hu") ? 1.0f : 0.0f;
+
+    // A-2a: per-tile counts (hand / remaining-pool / opponent-discards).
+    // These names mirror the Python trainer's PER_TILE_FEATURE_ORDER exactly,
+    // so the weights learned offline line up with the features computed here.
+    std::array<int, 38> opp_discard_counts = {0};
+    for (const int opp_hai : state.opponent_discards) {
+        if (opp_hai > 0 && opp_hai < 38) {
+            opp_discard_counts[opp_hai] += 1;
+        }
+    }
+    for (int hai = 1; hai < 38; hai++) {
+        const char* code = tile_code_for_feature(hai);
+        if (code == nullptr) {
+            continue;
+        }
+        features[std::string("hand_t_") + code] = static_cast<float>(state.game_state.tehai[hai]);
+        features[std::string("remain_t_") + code] = static_cast<float>(state.remaining_counts[hai]);
+        features[std::string("opp_disc_t_") + code] = static_cast<float>(opp_discard_counts[hai]);
+    }
+
     return features;
 }
 
