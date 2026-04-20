@@ -78,6 +78,7 @@ class V3SearchService:
             "reason": self._load_reason,
             "module_dir": str(self._module_dir) if self._module_dir else None,
             "params_dir": str(self._params_dir) if self._params_dir else None,
+            "profile": getattr(self, "_profile", None),
         }
 
     def _load(self) -> None:
@@ -100,10 +101,35 @@ class V3SearchService:
         try:
             self._engine = self._mod.LinhaiSearchEngineV3()
             cfg = self._mod.SearchConfig()
-            cfg.max_self_draw_depth = 1
-            cfg.deep_depth_for_near_ready = 2
-            cfg.beam_width_after_draw = 2
-            cfg.beam_width_far_shanten = 1
+            # A-1 hotfix: honour LINHAI_V3_FAST so bulk selfplay / regression
+            # jobs can trade a little strength for a LOT of throughput. On
+            # hands with multiple whites the default (depth=2) is ~50ms per
+            # step; the fast profile brings that down to <5ms.
+            #
+            # "fast" -> zero-lookahead EV; "prod" (default) -> 1-step
+            # self-draw + depth 2 on near-ready; "deep" -> same as prod but
+            # with wider beams for benchmark runs.
+            profile = os.environ.get("LINHAI_V3_PROFILE", "prod").strip().lower()
+            if os.environ.get("LINHAI_V3_FAST", "") not in {"", "0", "false", "no"}:
+                profile = "fast"
+            if profile == "fast":
+                cfg.max_self_draw_depth = 0
+                cfg.deep_depth_for_near_ready = 0
+                cfg.beam_width_after_draw = 1
+                cfg.beam_width_far_shanten = 1
+                cfg.time_budget_ms_discard = 15
+                cfg.time_budget_ms_response = 15
+            elif profile == "deep":
+                cfg.max_self_draw_depth = 2
+                cfg.deep_depth_for_near_ready = 3
+                cfg.beam_width_after_draw = 4
+                cfg.beam_width_far_shanten = 2
+            else:  # "prod"
+                cfg.max_self_draw_depth = 1
+                cfg.deep_depth_for_near_ready = 2
+                cfg.beam_width_after_draw = 2
+                cfg.beam_width_far_shanten = 1
+            self._profile = profile
             self._engine.set_search_config(cfg)
             params_dirs = _candidate_params_dirs()
             loaded_params = False

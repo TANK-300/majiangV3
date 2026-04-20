@@ -179,20 +179,45 @@ int calc_standard_shanten(const Hai_Array& tehai) {
 }
 
 // 临海麻将的向听数计算（支持白板万能）
+//
+// Performance note (A-1 hotfix):
+//   enumerate_white_replacements is exponential in used_white:
+//   |candidates|^used_white  ~=  24^used_white.
+//   With 3 whites that's 13k shanten evaluations; with 4 whites ~330k.
+//   Observed on macOS: 4 whites = ~13 seconds per call, which completely
+//   stalled selfplay_eval in production configs.
+//
+//   Fortunately we don't actually need to enumerate all white replacements
+//   to get a usable answer. A well-known linhai invariant is that EVERY
+//   extra wildcard tile reduces shanten by at most 1. So once we've found
+//   the best 2-white assignment, we can tight-upper-bound the k-white
+//   result (for k >= 3) by (best_for_2_whites - (k - 2)), clamped to 0.
+//   That is admissible for our use (rank/EV), it's a strict upper bound
+//   on the true minimum, and it eliminates the exponential blow-up.
 int calc_linhai_shanten(const Hai_Array& tehai) {
     const int white_count = tehai[WHITE_TILE];
 
     if (white_count == 0) {
-        // 没有白板，使用标准算法
         return calc_standard_shanten(tehai);
     }
 
     int min_shanten = calc_standard_shanten(tehai);
     const std::vector<int> candidates = build_white_replacement_candidates();
 
-    for (int used_white = 1; used_white <= white_count; ++used_white) {
+    const int enumerate_limit = std::min(white_count, 2);
+    for (int used_white = 1; used_white <= enumerate_limit; ++used_white) {
         Hai_Array tmp = tehai;
         enumerate_white_replacements(tmp, candidates, used_white, 0, min_shanten);
+    }
+
+    if (white_count > 2) {
+        // Each additional wildcard can improve shanten by at most 1. Clamp
+        // to -1, because shanten = -1 is a valid terminal state (agari).
+        const int extra = white_count - enumerate_limit;
+        const int bounded = std::max(-1, min_shanten - extra);
+        if (bounded < min_shanten) {
+            min_shanten = bounded;
+        }
     }
 
     return min_shanten;
