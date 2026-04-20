@@ -1,0 +1,82 @@
+{
+  "test_env": {
+    "os": "Linux x86_64 (cloud agent VM)",
+    "python": "3.12.3",
+    "gcc": "14",
+    "boost": "libboost-all-dev 1.83"
+  },
+  "pipeline_status": {
+    "python_tests": "26/26 passed",
+    "cpp_smoke": "test_search_v3_smoke PASS (integration branch)",
+    "cpp_a1_invariants": "test_search_v3_a1_invariants PASS (shanten=0, ev ratio=0.990)",
+    "linhai_v3_so": "engine/linhai_v3.cpython-312-x86_64-linux-gnu.so (1.21 MB)"
+  },
+  "engine_status": {
+    "active_engine": "v3",
+    "v3_available": true,
+    "v2_available_here": false,
+    "heuristic_available": true,
+    "note": "Customer prod box should also show active_engine=v3. If it shows heuristic, there is a deployment problem, not an algorithm problem."
+  },
+  "winrate_results": {
+    "framework_symmetry_check": {
+      "setup": "heuristic vs heuristic, 500 games, seed=1, max_turns=150",
+      "winrate_a": 0.502,
+      "winrate_b": 0.498,
+      "conclusion": "framework is symmetric"
+    },
+    "heuristic_vs_random": {
+      "setup": "heuristic vs random, 500 games, seed=1, max_turns=150",
+      "winrate_a": 0.926,
+      "winrate_b": 0.022,
+      "draw_rate": 0.052,
+      "conclusion": "heuristic signal is strong (lower-bound control)"
+    },
+    "v3_baseline_unchanged_params": {
+      "setup": "orchestrator:v3 vs heuristic, 500 games, seed=1, params=shipped/V2",
+      "winrate_a": 0.644,
+      "winrate_b": 0.356,
+      "tsumo_a": 187,
+      "ron_a": 135,
+      "houjuu_rate_a": 0.150,
+      "houjuu_rate_b": 0.270,
+      "avg_turns": 20.9,
+      "conclusion": "V3 engine with A-0+A-1+A-2a C++ code and SHIPPED V2 params already beats heuristic by 28.8 points. A-1 (exact shanten + chance-node fix) is the single biggest contributor."
+    },
+    "v3_with_retrained_sklearn_params": {
+      "setup": "orchestrator:v3 vs heuristic, 500 games, seed=1, params=freshly trained from 2000 selfplay games",
+      "winrate_a": 0.682,
+      "winrate_b": 0.318,
+      "tsumo_a": 193,
+      "ron_a": 148,
+      "houjuu_rate_a": 0.134,
+      "houjuu_rate_b": 0.296,
+      "avg_turns": 19.9,
+      "improvement_over_baseline_pp": 3.8,
+      "conclusion": "Retraining with the new 114-feature sklearn path on fresh data adds another 3.8 win rate points and drops houjuu rate from 15.0% to 13.4%."
+    },
+    "neural_vs_heuristic": {
+      "setup": "NeuralPolicy(MLP hidden=128, 20 epochs, 50k samples) vs heuristic, 200 games, seed=1",
+      "winrate_a": 0.375,
+      "winrate_b": 0.625,
+      "houjuu_rate_a": 0.330,
+      "offline_val_agari_acc": 0.849,
+      "offline_val_houjuu_acc": 0.848,
+      "conclusion": "Offline metrics far better than sklearn (agari 0.849 vs 0.685, houjuu 0.848 vs 0.750) but winrate worse -- classic distribution shift: NN trained on heuristic-vs-heuristic data has under-calibrated houjuu prior. Fix is B-2b: iterative self-play retraining or C++ search-augmented inference."
+    }
+  },
+  "offline_model_metrics": {
+    "agari_prob":   {"features": 114, "val_accuracy": 0.685},
+    "tenpai_prob":  {"features": 114, "val_accuracy": 0.685},
+    "houjuu_prob":  {"features": 114, "val_accuracy": 0.750},
+    "betaori":      {"features": 114, "val_accuracy": 0.685},
+    "tsumo_num":    {"features": 114, "val_r2":      0.293},
+    "ryukyoku_prob":{"features": 114, "note": "all zeros in 2000-game sample; need ryukyoku-heavy dataset"}
+  },
+  "next_steps_for_customer": [
+    "Merge integration branch into customer prod, hit /debug/engine_status, expect active_engine=v3.",
+    "Retrain the 6 models on production-realistic data (prod logs or larger selfplay) -> expect V3 win rate to move from 0.64 -> 0.68+.",
+    "To close the remaining gap, start A-2b: upgrade train_model_stub to LightGBM and add a C++ GBDT inference loader (linear model is the current ceiling).",
+    "For neural path: start B-2b: feed NN's own self-play samples back into training (iterative distillation) to fix the distribution shift seen above."
+  ]
+}

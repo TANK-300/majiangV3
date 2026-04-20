@@ -1,0 +1,24 @@
+{
+  "task": "ryukyoku_prob",
+  "created_at": "2026-04-20T12:34:25.296289+00:00",
+  "status": "trained",
+  "label_key": "source_meta.ryukyoku_label",
+  "dataset": {
+    "dataset_path": "data/samples_v1.jsonl",
+    "total_records": 50813,
+    "records_with_task_labels": 50813,
+    "label_key_counts": {
+      "best_discard_tile": 50813,
+      "can_win_label": 50813
+    }
+  },
+  "trained_examples": 50813,
+  "skipped_records": 0,
+  "model_file": "engine/params/v3/ryukyoku_prob/model.json",
+  "model_type": "logistic_regression",
+  "metrics": {
+    "log_loss": 9.99050999741065e-05,
+    "accuracy": 1.0,
+    "positive_rate": 0.0
+  }
+}

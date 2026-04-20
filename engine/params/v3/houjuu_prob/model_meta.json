@@ -1,0 +1,23 @@
+{
+  "task": "houjuu_prob",
+  "created_at": "2026-04-20T12:32:46.534669+00:00",
+  "status": "trained",
+  "label_key": "source_meta.houjuu_label",
+  "dataset": {
+    "dataset_path": "data/samples_v1.jsonl",
+    "total_records": 50813,
+    "records_with_task_labels": 50813,
+    "label_key_counts": {
+      "best_discard_tile": 50813,
+      "can_win_label": 50813
+    }
+  },
+  "trained_examples": 50813,
+  "skipped_records": 0,
+  "model_file": "engine/params/v3/houjuu_prob/model.json",
+  "model_type": "logistic_regression",
+  "metrics": {
+    "train_accuracy": 0.751980319803198,
+    "val_accuracy": 0.7495818163927974
+  }
+}
