@@ -409,6 +409,7 @@ class NeuralPolicy(Policy):
                     contract_target_count=0,
                     opponent_meld_count=0,
                     opponent_discard_count=len(opp.discards),
+                    opponent_discards=list(opp.discards),
                 )
             except Exception:
                 continue

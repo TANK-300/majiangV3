@@ -155,11 +155,8 @@ class SamplingGame(SimulatedGame):
         all_discards = list(seat.discards) + list(opp.discards)
         remaining = _compute_remaining_counts([seat.hand, opp.hand], all_discards)
 
-        # NB: we intentionally DON'T pass opponent_discards here. That kwarg
-        # is added by A-2a (per-tile features). Keeping this call compatible
-        # with the base A-0 build_model_features signature lets B-1 land
-        # independent of A-2a; when A-2a merges we'll widen the recorder to
-        # include the per-tile features in a follow-up.
+        # Integration note: with A-2a merged, passing opponent_discards turns
+        # on the 75 per-tile features (hand_t_* / remain_t_* / opp_disc_t_*).
         features = build_model_features(
             active_player=active_player,
             remaining_counts=remaining,
@@ -173,6 +170,7 @@ class SamplingGame(SimulatedGame):
             contract_target_count=0,
             opponent_meld_count=0,
             opponent_discard_count=len(opp.discards),
+            opponent_discards=list(opp.discards),
         )
 
         self.steps.append(
