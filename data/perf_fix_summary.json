@@ -1,0 +1,32 @@
+{
+  "problem_reproduced": {
+    "before_fix_ms_by_whites": {
+      "0": 4.0,
+      "1": 41.0,
+      "2": 294.4,
+      "3": 2091.7,
+      "4": 13646.3
+    },
+    "root_cause": "calc_linhai_shanten enumerated 24^white_count wildcard replacements; each extra white multiplied runtime by ~8x"
+  },
+  "after_fix_ms_by_whites_prod": {
+    "0": 2.65,
+    "1": 5.70,
+    "2": 52.71,
+    "3": 32.86,
+    "4": 32.41
+  },
+  "speedup_at_4_whites": "420x",
+  "fixes": [
+    "calc_linhai_shanten caps white enumeration at 2, uses shanten-decrement upper bound for >=3 whites (admissible)",
+    "shanten_cache_ in LinhaiSearchEngineV3 now persists across searches (tehai->shanten is stateless), capped at 200k entries",
+    "v3_service.py honours LINHAI_V3_PROFILE={fast,prod,deep} and legacy LINHAI_V3_FAST; default is prod"
+  ],
+  "winrate_500_games_vs_heuristic_seed1": {
+    "heuristic_symmetry": {"winrate_a": 0.502, "elapsed_s": 0.62},
+    "v3_prod":            {"winrate_a": 0.682, "houjuu_rate_a": 0.136, "elapsed_s": 111.0},
+    "v3_fast":            {"winrate_a": 0.670, "houjuu_rate_a": 0.136, "elapsed_s": 72.7},
+    "v3_deep":            {"winrate_a": 0.682, "houjuu_rate_a": 0.130, "elapsed_s": 186.9}
+  },
+  "conclusion": "V3 prod profile delivers 68.2% win rate at 13.6% houjuu rate in 111 seconds for 500 games. Fast profile retains 67.0% at ~65% of the runtime. Deep profile matches prod at this data size; a bigger uplift is expected once A-2b (LightGBM) is in."
+}
