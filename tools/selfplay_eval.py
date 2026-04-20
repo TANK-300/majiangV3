@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import math
 import os
 import random
 import statistics
@@ -295,17 +296,172 @@ class OrchestratorPolicy(Policy):
         )
 
 
+class NeuralPolicy(Policy):
+    """B-2a: ONNX-backed policy that scores every candidate discard with an
+    MLP trained on self-play samples.
+
+    Score per candidate (larger is better):
+        score = agari_prob - beta * houjuu_prob - alpha * tsumo_num
+
+    The ONNX bundle must contain model.onnx plus model_meta.json (both are
+    produced by tools/train_neural.py).
+
+    Call with spec: ``neural:/path/to/bundle_dir`` or provide via env
+    ``LINHAI_NEURAL_BUNDLE``.
+    """
+
+    def __init__(
+        self,
+        bundle_dir: Path,
+        *,
+        alpha: float = 0.02,
+        beta: float = 2.5,
+        name: Optional[str] = None,
+    ) -> None:
+        import numpy as np
+        import onnxruntime as ort
+
+        bundle_dir = Path(bundle_dir)
+        meta_path = bundle_dir / "model_meta.json"
+        onnx_path = bundle_dir / "model.onnx"
+        if not meta_path.is_file() or not onnx_path.is_file():
+            raise FileNotFoundError(f"Neural bundle missing at {bundle_dir} (need model.onnx + model_meta.json)")
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        self._feature_names: List[str] = list(meta["feature_names"])
+        self._feature_means: List[float] = [float(meta["feature_means"][name]) for name in self._feature_names]
+        self._feature_stds: List[float] = [float(meta["feature_stds"][name]) for name in self._feature_names]
+        self._session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
+        self._alpha = float(alpha)
+        self._beta = float(beta)
+        self._np = np
+        self.name = name or f"neural[{bundle_dir.name}]"
+
+    def _score_features(self, feature_dict: Dict[str, float]) -> Tuple[float, float, float]:
+        np = self._np
+        x = np.zeros((1, len(self._feature_names)), dtype=np.float32)
+        for i, name in enumerate(self._feature_names):
+            raw = float(feature_dict.get(name, 0.0))
+            std = self._feature_stds[i] if self._feature_stds[i] > 1e-9 else 1.0
+            x[0, i] = (raw - self._feature_means[i]) / std
+        logits = self._session.run(None, {"features": x})[0][0]
+
+        def _sig(z: float) -> float:
+            if z >= 0:
+                e = math.exp(-z)
+                return 1.0 / (1.0 + e)
+            e = math.exp(z)
+            return e / (1.0 + e)
+
+        agari = _sig(float(logits[0]))
+        houjuu = _sig(float(logits[1]))
+        tsumo_num = float(logits[2])
+        return agari, houjuu, tsumo_num
+
+    def choose_discard(self, game: "SimulatedGame", seat_idx: int) -> DiscardDecision:
+        from tools.extract_canonical_states import build_model_features  # local import
+
+        seat = game.seats[seat_idx]
+        opp = game.seats[1 - seat_idx]
+        remaining = {code: 4 for code in (game.__class__.__module__,)}  # placeholder, overwritten below
+        # Build remaining counts from scratch
+        from tools.extract_canonical_states import ALL_TILE_CODES
+
+        remaining = {code: 4 for code in ALL_TILE_CODES}
+        for tile in seat.hand:
+            remaining[tile] = max(0, remaining[tile] - 1)
+        for tile in opp.hand:
+            remaining[tile] = max(0, remaining[tile] - 1)
+        for tile in seat.discards:
+            remaining[tile] = max(0, remaining[tile] - 1)
+        for tile in opp.discards:
+            remaining[tile] = max(0, remaining[tile] - 1)
+
+        best_tile: Optional[str] = None
+        best_score = -1e30
+        candidate_tiles = list(set(seat.hand))
+        for candidate in candidate_tiles:
+            hypothetical = list(seat.hand)
+            hypothetical.remove(candidate)
+            active_player = {
+                "wind": seat.wind.value,
+                "hand": hypothetical,
+                "hand_counts": {code: hypothetical.count(code) for code in set(hypothetical)},
+                "melds": [],
+                "discards": list(seat.discards) + [candidate],
+                "tree_revealed": False,
+                "grab_charge_hits": 0,
+                "grab_charge_limit": 0,
+                "contract_targets": [],
+                "contract_counter": 0,
+                "passed_hu_this_round": seat.passed_hu_this_round,
+            }
+            try:
+                features = build_model_features(
+                    active_player=active_player,
+                    remaining_counts=remaining,
+                    available_actions=["discard"],
+                    can_win=not seat.passed_hu_this_round,
+                    wall_remaining=len(game.wall),
+                    from_player=1 - seat_idx,
+                    target_hai=None,
+                    tree_active=False,
+                    grab_charge_active=False,
+                    contract_target_count=0,
+                    opponent_meld_count=0,
+                    opponent_discard_count=len(opp.discards),
+                )
+            except Exception:
+                continue
+            try:
+                agari, houjuu, tsumo = self._score_features(features)
+            except Exception:
+                continue
+            if candidate == "white":
+                # never throw the universal tile away without a strong reason
+                score = agari - self._beta * houjuu - self._alpha * tsumo - 5.0
+            else:
+                score = agari - self._beta * houjuu - self._alpha * tsumo
+            if score > best_score:
+                best_score = score
+                best_tile = candidate
+
+        if best_tile is None or best_tile not in seat.hand:
+            # Degrade to heuristic if the network couldn't score anything
+            return HeuristicPolicy().choose_discard(game, seat_idx)
+
+        return DiscardDecision(tile=best_tile, engine="neural", reason=f"score={best_score:.3f}")
+
+
 def policy_factory(spec: str, rng: random.Random) -> Policy:
-    """Build a Policy from a short spec string (``heuristic`` / ``random`` /
-    ``orchestrator`` / ``orchestrator:label``)."""
-    spec = spec.strip().lower()
-    if spec in {"heuristic", "rule", "baseline"}:
+    """Build a Policy from a short spec string.
+
+    Supported forms:
+        ``heuristic`` / ``rule`` / ``baseline``
+        ``random``
+        ``orchestrator`` / ``orchestrator:label``
+        ``neural:/abs/path/to/bundle_dir``
+        ``neural`` (reads LINHAI_NEURAL_BUNDLE from env)
+    """
+    raw = spec.strip()
+    lower = raw.lower()
+    if lower in {"heuristic", "rule", "baseline"}:
         return HeuristicPolicy()
-    if spec == "random":
+    if lower == "random":
         return RandomPolicy(rng)
-    if spec.startswith("orchestrator"):
-        _, _, label = spec.partition(":")
+    if lower.startswith("orchestrator"):
+        _, _, label = raw.partition(":")
         return OrchestratorPolicy(name=label.strip() or None)
+    if lower.startswith("neural"):
+        _, _, bundle_spec = raw.partition(":")
+        bundle_spec = bundle_spec.strip()
+        if not bundle_spec:
+            bundle_spec = os.environ.get("LINHAI_NEURAL_BUNDLE", "")
+        if not bundle_spec:
+            raise ValueError(
+                "neural policy requires a bundle directory (spec 'neural:/path/to/bundle' or "
+                "LINHAI_NEURAL_BUNDLE env var)"
+            )
+        return NeuralPolicy(Path(bundle_spec))
     raise ValueError(f"Unknown policy spec: {spec}")
 
 

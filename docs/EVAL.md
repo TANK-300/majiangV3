@@ -58,6 +58,30 @@ python3 tools/train_model_stub.py --task agari_prob \
 
 端到端 smoke：200 局自对弈 → 训练 `agari_prob`，accuracy 达到 67%（positive rate 49% 基线），说明数据链有效。
 
+## Python 神经网络 policy（B-2a）
+
+`tools/train_neural.py` 读 B-1 产出的 JSONL，训练一个多头 MLP（`agari / houjuu / tsumo_num`），导出 ONNX + `model_meta.json`。然后可以用 `neural:/path/to/bundle` 作为 selfplay 的 policy：
+
+```
+# 1. 生成大规模自对弈样本
+python3 tools/selfplay_sample.py --policy-a heuristic --policy-b heuristic \
+    --games 5000 --seed 1 --output samples.jsonl
+
+# 2. 训练 + 导出 ONNX
+python3 tools/train_neural.py --dataset samples.jsonl --output-dir params/neural_v1 --epochs 30 --hidden 128
+
+# 3. 对战 heuristic
+python3 tools/selfplay_eval.py --policy-a neural:params/neural_v1 --policy-b heuristic --games 1000 --seed 1
+```
+
+样本 1000 局、hidden=128、30 epoch 时，`val_agari_acc ≈ 0.85`、`val_houjuu_acc ≈ 0.76`。
+
+**已知 caveat**：直接用 heuristic-vs-heuristic 产生的样本训出来的 NN 在对打 heuristic 时胜率可能低于 50%。原因是训练样本里 heuristic 放炮率本来就很低，NN 学到的 houjuu 先验偏弱 → 打牌时不够防守。正确做法（留给 B-2b / Plan B 迭代）：用 NN 自对弈样本做第 2 轮训练，重新校准 houjuu 分布；或者把训练样本改成 heuristic vs random（放炮率更均衡）。
+
+## C++ 侧集成（B-2b，未完成）
+
+`tools/train_neural.py` 产出的 ONNX 会在 B-2b 被 C++ `LinhaiSearchEngineV3` 通过 onnxruntime 加载，替换 `V3LinearModel` 的 `predict_model`。届时生产 V3 就能用神经网络估值。
+
 ## /debug/engine_status 端点
 
 生产环境诊断"胜率不对劲"时，先 GET `/debug/engine_status`。如果返回的 `active_engine == "heuristic"`，说明 C++ 扩展没加载成功，整个服务其实在跑启发式，胜率差异就不奇怪。`v3.reason` 字段会告诉你具体失败原因（例如 `import_failed:...` 或 `params_not_found`）。
