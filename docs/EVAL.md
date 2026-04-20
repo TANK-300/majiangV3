@@ -37,6 +37,27 @@ python3 tools/selfplay_eval.py --policy-a orchestrator:v3 --policy-b heuristic -
 
 **注意**：这里的"胜率"是简化规则下的相对度量，不是生产环境的绝对胜率；它的价值在于同一脚本在两个 policy 上给出的差值。
 
+## 自对弈样本生成（tools/selfplay_sample.py, B-1）
+
+`tools/selfplay_eval.py` 只给胜率汇总，`tools/selfplay_sample.py` 在同样的对局模拟之上，把**每一个打牌决策**的 `(state, action, outcome)` 三元组写到 JSONL，供离线训练器（`tools/train_model_stub.py`）和未来的 B-2 神经网络直接消费。
+
+```
+python3 tools/selfplay_sample.py --policy-a heuristic --policy-b heuristic \
+    --games 1000 --seed 1 --output /tmp/samples.jsonl
+
+python3 tools/train_model_stub.py --task agari_prob \
+    --version-dir /tmp/params --dataset /tmp/samples.jsonl
+```
+
+单条样本字段（关键项）：
+
+- `record_id` / `game_index` / `step_index` / `seat_wind`
+- `model_features`：与 `extract_canonical_states` 一致的特征字典（可直接喂训练器）
+- `outcome`：`win / loss / draw`、`tsumo / ron / draw`、距离终局步数
+- `task_labels.can_win_label`、`source_meta.houjuu_label`、`source_meta.tsumo_num_label`、`source_meta.ryukyoku_label`、`source_meta.betaori_label`
+
+端到端 smoke：200 局自对弈 → 训练 `agari_prob`，accuracy 达到 67%（positive rate 49% 基线），说明数据链有效。
+
 ## /debug/engine_status 端点
 
 生产环境诊断"胜率不对劲"时，先 GET `/debug/engine_status`。如果返回的 `active_engine == "heuristic"`，说明 C++ 扩展没加载成功，整个服务其实在跑启发式，胜率差异就不奇怪。`v3.reason` 字段会告诉你具体失败原因（例如 `import_failed:...` 或 `params_not_found`）。
