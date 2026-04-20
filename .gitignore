@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+*.so
+*.o
+*.obj
+obj/
+*.egg-info/
+dist/
+build/
+.workbuddy/
+.DS_Store
+*.swp
+*.swo
