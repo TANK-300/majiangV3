@@ -16,6 +16,24 @@ class LinhaiV3Orchestrator:
         self.v2 = V2FallbackAdapter()
         self.strategy = StrategyFallbackService()
 
+    def engine_status(self) -> Dict[str, object]:
+        """Return which engine is actually wired up. Useful for ops to check if the
+        service is silently running on the heuristic fallback."""
+        v3_status = self.v3.status()
+        v2_status = self.v2.status()
+        if v3_status.get("available"):
+            active = "v3"
+        elif v2_status.get("available"):
+            active = "v2"
+        else:
+            active = "heuristic"
+        return {
+            "active_engine": active,
+            "v3": v3_status,
+            "v2": v2_status,
+            "heuristic_available": True,
+        }
+
     def recommend(self, state: GameState) -> Dict:
         v3_result = self.v3.recommend_discard(state)
         if v3_result is not None:

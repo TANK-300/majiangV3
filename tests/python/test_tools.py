@@ -6,8 +6,12 @@ import sys
 from pathlib import Path
 
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+TOOLS_DIR = REPO_ROOT / "tools"
+
+
 def test_extract_canonical_states_outputs_normalized_record(tmp_path: Path) -> None:
-    tool = Path("/Users/wf/Documents/wb/linhai-majiang-v3/tools/extract_canonical_states.py")
+    tool = TOOLS_DIR / "extract_canonical_states.py"
     source = tmp_path / "states.jsonl"
     target = tmp_path / "canonical.jsonl"
     source.write_text(
@@ -82,7 +86,7 @@ def test_extract_canonical_states_outputs_normalized_record(tmp_path: Path) -> N
 
 
 def test_train_model_stub_creates_metadata(tmp_path: Path) -> None:
-    tool = Path("/Users/wf/Documents/wb/linhai-majiang-v3/tools/train_model_stub.py")
+    tool = TOOLS_DIR / "train_model_stub.py"
     target = tmp_path / "params"
     subprocess.check_call([sys.executable, str(tool), "--task", "agari_prob", "--version-dir", str(target)])
     meta = target / "v3" / "agari_prob" / "model_meta.json"
@@ -92,7 +96,7 @@ def test_train_model_stub_creates_metadata(tmp_path: Path) -> None:
 
 
 def test_train_model_stub_summarizes_dataset(tmp_path: Path) -> None:
-    tool = Path("/Users/wf/Documents/wb/linhai-majiang-v3/tools/train_model_stub.py")
+    tool = TOOLS_DIR / "train_model_stub.py"
     target = tmp_path / "params"
     dataset = tmp_path / "canonical.jsonl"
     dataset.write_text(
@@ -157,7 +161,7 @@ def test_train_model_stub_summarizes_dataset(tmp_path: Path) -> None:
 
 
 def test_train_model_stub_supports_explicit_label_key(tmp_path: Path) -> None:
-    tool = Path("/Users/wf/Documents/wb/linhai-majiang-v3/tools/train_model_stub.py")
+    tool = TOOLS_DIR / "train_model_stub.py"
     target = tmp_path / "params"
     dataset = tmp_path / "canonical.jsonl"
     dataset.write_text(
@@ -222,7 +226,7 @@ def test_train_model_stub_supports_explicit_label_key(tmp_path: Path) -> None:
 
 
 def test_eval_search_compares_predictions_against_labels(tmp_path: Path) -> None:
-    tool = Path("/Users/wf/Documents/wb/linhai-majiang-v3/tools/eval_search.py")
+    tool = TOOLS_DIR / "eval_search.py"
     labels = tmp_path / "labels.jsonl"
     predictions = tmp_path / "predictions.jsonl"
     labels.write_text(
