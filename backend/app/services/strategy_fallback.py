@@ -66,7 +66,23 @@ class StrategyFallbackService:
         action_buttons: Optional[List[str]] = None,
     ) -> Dict:
         actions = [str(action).strip().lower() for action in (action_buttons or ["pass"]) if str(action).strip()]
-        if "hu" in actions:
+        # Respect the linhai "can't hu again after having passed hu this
+        # round" rule. Without this check the heuristic fallback would
+        # enthusiastically return hu even when the player has already
+        # forfeited the right -- which is the exact bug we caught via
+        # test_passed_hu_flag_propagates.
+        current_player = None
+        try:
+            current_player = state.current_player()
+        except Exception:
+            current_player = None
+        passed_hu = bool(
+            getattr(state, "passed_hu_this_round", False)
+            or getattr(state, "pass_hu_this_round", False)
+            or (current_player and getattr(current_player, "passed_hu_this_round", False))
+            or (current_player and getattr(current_player, "pass_hu_this_round", False))
+        )
+        if "hu" in actions and not passed_hu:
             return {
                 "engine": "heuristic",
                 "chosen_by": "heuristic",
