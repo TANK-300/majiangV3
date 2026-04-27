@@ -232,11 +232,52 @@ def build_model_features(
     # A-2a: expose per-tile hand / remaining / opponent-discard counts so the
     # downstream linear/GBDT model can actually see WHICH tile we're holding or
     # throwing, not just aggregate counts.
+    #
+    # A-2c-3: add per-tile safety flag (1 if tile appears in opponent river ->
+    # genbutsu / "現物", i.e. safe to discard). This is redundant with
+    # opp_disc_t_* > 0 in theory, but a binary flag is much easier for a GBDT
+    # split to pick up as a single rule than a count threshold.
     per_tile_features: Dict[str, float] = {}
+    safe_in_hand_count = 0.0
+    raw_in_hand_count = 0.0
+    opp_max_tile_disc = 0
     for tile_code in PER_TILE_FEATURE_ORDER:
-        per_tile_features[_feature_key_for_tile("hand_t", tile_code)] = float(hand_counts.get(tile_code, 0))
-        per_tile_features[_feature_key_for_tile("remain_t", tile_code)] = float(remaining_counts.get(tile_code, 0))
-        per_tile_features[_feature_key_for_tile("opp_disc_t", tile_code)] = float(opponent_discard_counts.get(tile_code, 0))
+        hand_c = float(hand_counts.get(tile_code, 0))
+        remain_c = float(remaining_counts.get(tile_code, 0))
+        opp_disc_c = float(opponent_discard_counts.get(tile_code, 0))
+        per_tile_features[_feature_key_for_tile("hand_t", tile_code)] = hand_c
+        per_tile_features[_feature_key_for_tile("remain_t", tile_code)] = remain_c
+        per_tile_features[_feature_key_for_tile("opp_disc_t", tile_code)] = opp_disc_c
+        safety_flag = 1.0 if opp_disc_c > 0 else 0.0
+        per_tile_features[_feature_key_for_tile("safety_t", tile_code)] = safety_flag
+        if hand_c > 0:
+            if safety_flag > 0:
+                safe_in_hand_count += hand_c
+            elif remain_c > 0:
+                raw_in_hand_count += hand_c
+        if opp_disc_c > opp_max_tile_disc:
+            opp_max_tile_disc = int(opp_disc_c)
+
+    # A-2c-3: aggregate defensive signals. These let the GBDT's houjuu/betaori
+    # heads see opponent-threat at a glance instead of reconstructing it from
+    # 25 per-tile counts. Kept cheap to compute.
+    opp_honor_disc_count = 0
+    opp_terminal_disc_count = 0
+    opp_middle_disc_count = 0  # 4/5/6 in w/t suits -- discarding these usually means hon/char-itsu push
+    for tile_code, cnt in opponent_discard_counts.items():
+        if cnt <= 0:
+            continue
+        tile = require_tile(tile_code)
+        if tile.suit is Suit.HONOR:
+            opp_honor_disc_count += cnt
+        else:
+            rank = tile.rank or 0
+            if rank in {1, 9}:
+                opp_terminal_disc_count += cnt
+            elif rank in {4, 5, 6}:
+                opp_middle_disc_count += cnt
+    opp_disc_total = sum(opponent_discard_counts.values())
+    opp_disc_per_meld = float(opp_disc_total) / float(max(1, opponent_meld_count))
 
     aggregate = {
         "wall_remaining": float(wall_remaining),
@@ -269,6 +310,14 @@ def build_model_features(
         "contract_counter": float(active_player["contract_counter"]),
         "opponent_meld_count": float(opponent_meld_count),
         "opponent_discard_count": float(opponent_discard_count),
+        # A-2c-3: defensive aggregate signals for houjuu/betaori heads.
+        "safe_in_hand_count": safe_in_hand_count,
+        "raw_in_hand_count": raw_in_hand_count,
+        "opp_honor_disc_count": float(opp_honor_disc_count),
+        "opp_terminal_disc_count": float(opp_terminal_disc_count),
+        "opp_middle_disc_count": float(opp_middle_disc_count),
+        "opp_max_tile_disc": float(opp_max_tile_disc),
+        "opp_disc_per_meld": float(opp_disc_per_meld),
         "remaining_total": float(remaining_total),
         "remaining_white": float(remaining_counts["white"]),
         "can_win": 1.0 if can_win else 0.0,

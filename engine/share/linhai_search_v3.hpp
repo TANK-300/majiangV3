@@ -47,6 +47,30 @@ struct V3LinearModel {
     std::vector<float> weights;
 };
 
+// A-2b: GBDT (LightGBM) model bundle. One struct-of-arrays representation
+// backs all trees of one head so the hot predict path is cache-friendly.
+// The schema matches exactly what tools/train_model_stub.py emits when
+// LightGBM is available (see `_flatten_lightgbm_tree`).
+struct V3GBDTNode {
+    int feat = -1;          // feature index into feature_names; -1 for leaf
+    float thr = 0.0f;       // split threshold; x[feat] <= thr goes left
+    int left = -1;
+    int right = -1;
+    float leaf_value = 0.0f;
+};
+
+struct V3GBDTModel {
+    bool loaded = false;
+    bool logistic = true;   // true iff objective == "binary"
+    std::string task;
+    std::string label_key;
+    float init_score = 0.0f; // constant added to the sum of leaf values (LightGBM's implicit prior)
+    std::vector<std::string> feature_names;
+    // Flattened trees: trees[t] is the node list for the t-th booster tree.
+    // Index 0 inside each list is always the root.
+    std::vector<std::vector<V3GBDTNode>> trees;
+};
+
 struct SearchCandidate {
     std::string action = "discard";
     int hai = 0;
@@ -140,6 +164,14 @@ private:
     V3LinearModel betaori_model_;
     V3LinearModel tsumo_num_model_;
     V3LinearModel ryukyoku_model_;
+    // A-2b: GBDT counterparts. Each head tries to load the GBDT bundle
+    // first; if unavailable, the linear bundle above is used as a fallback.
+    V3GBDTModel agari_gbdt_;
+    V3GBDTModel tenpai_gbdt_;
+    V3GBDTModel houjuu_gbdt_;
+    V3GBDTModel betaori_gbdt_;
+    V3GBDTModel tsumo_num_gbdt_;
+    V3GBDTModel ryukyoku_gbdt_;
     boost::unordered_map<std::size_t, float> future_cache_;
     boost::unordered_map<std::size_t, SearchResult> discard_cache_;
     boost::unordered_map<std::size_t, int> shanten_cache_;
@@ -153,6 +185,13 @@ private:
 
     SearchResult make_fallback_result(const std::string& reason) const;
     int cached_shanten(const Hai_Array& tehai);
+    // Fuuro-aware shanten: merges the fuuro tiles back into the tehai counts
+    // via using_hai_array() so the standard shanten formula operates on the
+    // full 13-tile (or 14-tile for post-draw) representation. Using the raw
+    // 10/7/4-tile hand directly undercounts melds the player has already
+    // locked in and produces systematically wrong shanten for any hand with
+    // fuuro — the root cause of the engine undervaluing chi/pon tenpai.
+    int cached_shanten(const Hai_Array& tehai, const Fuuro_Vector& fuuro);
     SearchResult search_discard_once(CanonicalGameState& state, int depth);
     float evaluate_future_draws(CanonicalGameState state, int depth, int& nodes_expanded);
     std::vector<SearchCandidate> build_discard_candidates(const CanonicalGameState& state);
@@ -164,6 +203,15 @@ private:
     void add_search_nodes(int count);
     bool is_search_budget_exceeded();
     bool load_v3_model(const std::string& path, V3LinearModel& out_model);
+    // A-2b: unified model loader that detects GBDT vs linear schema from the
+    // JSON's `model_type` field and populates the correct output struct.
+    // Returns true if either branch loaded successfully.
+    bool load_v3_head(
+        const std::string& path,
+        V3LinearModel& linear_out,
+        V3GBDTModel& gbdt_out
+    );
+    bool load_v3_gbdt(const std::string& path, V3GBDTModel& out_model);
     std::unordered_map<std::string, float> build_state_features(const CanonicalGameState& state) const;
     void add_candidate_features(
         std::unordered_map<std::string, float>& features,
@@ -173,6 +221,16 @@ private:
         bool safe
     ) const;
     float predict_model(const V3LinearModel& model, const std::unordered_map<std::string, float>& features) const;
+    // A-2b: GBDT inference. Internally materializes x[] once from the feature
+    // map using gbdt.feature_names, then walks every tree in O(depth) time.
+    float predict_gbdt(const V3GBDTModel& model, const std::unordered_map<std::string, float>& features) const;
+    // A-2b: unified head prediction. Uses GBDT if loaded, otherwise linear,
+    // otherwise returns 0.0f (caller should already have short-circuited).
+    float predict_head(
+        const V3LinearModel& linear,
+        const V3GBDTModel& gbdt,
+        const std::unordered_map<std::string, float>& features
+    ) const;
     float estimate_agari_prob(
         const CanonicalGameState& state,
         const SearchCandidate& candidate,

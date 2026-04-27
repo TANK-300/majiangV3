@@ -97,8 +97,16 @@ def test_emitted_jsonl_feeds_train_model_stub(tmp_path: Path) -> None:
     status_line = json.loads(result.stdout.splitlines()[-1])
     assert status_line["status"] == "trained"
     model = json.loads((trained_dir / "v3" / "agari_prob" / "model.json").read_text(encoding="utf-8"))
-    assert model["model_type"] in {"logistic_regression"}
-    assert len(model["weights"]) == len(model["feature_names"])
+    # A-2b: train_model_stub.py's default mode is now 'auto', which prefers
+    # LightGBM GBDT when enough rows are available. This pipeline test must
+    # accept both the legacy linear schema and the new GBDT schema as proof
+    # that self-play samples can feed the trainer end-to-end.
+    assert model["model_type"] in {"logistic_regression", "lightgbm_gbdt"}
+    if model["model_type"] == "logistic_regression":
+        assert len(model["weights"]) == len(model["feature_names"])
+    else:
+        assert isinstance(model["trees"], list) and model["trees"]
+        assert model["feature_names"]
 
 
 def test_cli_emits_summary(tmp_path: Path) -> None:

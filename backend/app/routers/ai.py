@@ -20,7 +20,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..core.state import GameState, Meld, PlayerState, Wind
 from ..core.tiles import normalize_code
@@ -79,6 +79,110 @@ def _canonical_tile(code: str) -> str:
         raise HTTPException(status_code=400, detail=f"unknown tile code {raw!r}: {exc}")
 
 
+# ---------- legacy-payload normalization ------------------------------ #
+# The uni-app frontend (`majiang/frontend/pages/index/index.vue`) still
+# speaks the old wire format: `wind: "east"` instead of `wind_seat: 0`,
+# `action_buttons` instead of `available_actions`, and ships extra fields
+# (`melds`, `dora_indicators`, `opponent_discards`, `latest_action_kind`,
+# `action_buttons`, `game_id`, `record_data`) that the strict V3 schema
+# doesn't know about. Rather than require an app rebuild, we translate
+# those at the edge so the existing binary keeps working.
+_WIND_STR_TO_SEAT: Dict[str, int] = {
+    "east": 0, "south": 1, "west": 2, "north": 3,
+    "E": 0, "S": 1, "W": 2, "N": 3,
+    "e": 0, "s": 1, "w": 2, "n": 3,
+    "0": 0, "1": 1, "2": 2, "3": 3,
+    "1z": 0, "2z": 1, "3z": 2, "4z": 3,
+}
+
+
+def _coerce_wind_seat(raw) -> Optional[int]:
+    if raw is None:
+        return None
+    if isinstance(raw, bool):  # bool is a subclass of int; reject it
+        return None
+    if isinstance(raw, int):
+        return raw if 0 <= raw <= 3 else None
+    if isinstance(raw, str):
+        mapped = _WIND_STR_TO_SEAT.get(raw.strip())
+        if mapped is not None:
+            return mapped
+        try:
+            n = int(raw.strip())
+            return n if 0 <= n <= 3 else None
+        except ValueError:
+            return None
+    return None
+
+
+# Some legacy action codes from the app map to V3 engine actions.
+# "guo" is the pinyin for 过 (pass); everything else is pass-through.
+_ACTION_ALIAS: Dict[str, str] = {
+    "guo": "pass",
+    "\u8fc7": "pass",
+    "skip": "pass",
+    "none": "pass",
+}
+
+
+def _normalize_actions(raw) -> List[str]:
+    if raw is None:
+        return ["pass"]
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return ["pass"]
+    out: List[str] = []
+    seen = set()
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        token = item.strip().lower()
+        if not token:
+            continue
+        token = _ACTION_ALIAS.get(token, token)
+        if token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return out or ["pass"]
+
+
+def _legacy_translate(values):
+    """Pre-validator that rewrites legacy uni-app field names into the V3
+    canonical ones. Runs before Pydantic type validation so the request
+    schema sees the translated dict."""
+    if not isinstance(values, dict):
+        return values
+    # wind -> wind_seat
+    if "wind_seat" not in values or values.get("wind_seat") in (None, ""):
+        for alt in ("wind", "seat", "player_wind"):
+            if alt in values:
+                coerced = _coerce_wind_seat(values[alt])
+                if coerced is not None:
+                    values["wind_seat"] = coerced
+                break
+    # Even when wind_seat is provided as a string (e.g. "0", "east"), coerce it.
+    if isinstance(values.get("wind_seat"), str):
+        coerced = _coerce_wind_seat(values["wind_seat"])
+        if coerced is not None:
+            values["wind_seat"] = coerced
+    # action_buttons -> available_actions
+    if "available_actions" not in values and "action_buttons" in values:
+        values["available_actions"] = _normalize_actions(values["action_buttons"])
+    # `opponent_discards` and `discards` are kept and exposed as first-class
+    # fields so the engine can use the opponent's river (risk / defense
+    # features benefit from this). Other legacy fields are harmless metadata
+    # and can be quietly dropped to avoid extra="allow" noise.
+    for legacy_key in (
+        "melds", "dora_indicators",
+        "latest_action_kind", "action_buttons", "game_id", "record_data",
+        "player_wind", "seat", "wind",
+    ):
+        values.pop(legacy_key, None)
+    return values
+
+
 # ---------- request / response schemas (kept byte-compatible) -------------- #
 
 
@@ -94,6 +198,8 @@ class ChiPonRecord(BaseModel):
 
 
 class AIRecommendRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     hand: List[str] = Field(..., min_length=13, max_length=14, description="\u624b\u724c\u5217\u8868")
     wind_seat: int = Field(..., ge=0, le=3, description="\u98ce\u4f4d")
     has_kan: bool = Field(default=False, description="\u662f\u5426\u6709\u6760")
@@ -102,6 +208,13 @@ class AIRecommendRequest(BaseModel):
     opponents_state: Optional[List[OpponentState]] = Field(default=None)
     chi_pon_history: Optional[List[ChiPonRecord]] = Field(default=None)
     strategy: str = Field(default="balanced", description="balanced/aggressive/defensive")
+    discards: Optional[List[str]] = Field(default=None, description="\u81ea\u5bb6\u724c\u6cb3")
+    opponent_discards: Optional[List[str]] = Field(default=None, description="\u5bf9\u624b\u724c\u6cb3")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_payload(cls, values):
+        return _legacy_translate(values)
 
 
 class AIRecommendResponse(BaseModel):
@@ -111,11 +224,20 @@ class AIRecommendResponse(BaseModel):
 
 
 class AIAllRecommendationsRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     hand: List[str] = Field(..., min_length=13, max_length=14)
     wind_seat: int = Field(..., ge=0, le=3)
     has_kan: bool = Field(default=False)
     wall_remaining: int = Field(default=70, ge=0, le=136)
     round_number: int = Field(default=0, ge=0)
+    discards: Optional[List[str]] = Field(default=None)
+    opponent_discards: Optional[List[str]] = Field(default=None)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_payload(cls, values):
+        return _legacy_translate(values)
 
 
 class AIResponseRequest(BaseModel):
@@ -123,7 +245,11 @@ class AIResponseRequest(BaseModel):
 
     The frontend already calls this endpoint via api.js
     `getResponseRecommendation`, but the legacy backend never exposed it.
+    Accepts both new-style (`wind_seat`, `available_actions`) and
+    legacy uni-app-style (`wind`, `action_buttons`) payloads.
     """
+
+    model_config = ConfigDict(extra="ignore")
 
     hand: List[str] = Field(..., min_length=0, max_length=14, description="\u624b\u724c")
     wind_seat: int = Field(..., ge=0, le=3)
@@ -137,6 +263,13 @@ class AIResponseRequest(BaseModel):
     round_number: int = Field(default=0, ge=0)
     opponents_state: Optional[List[OpponentState]] = Field(default=None)
     passed_hu_this_round: bool = Field(default=False, description="\u672c\u5c40\u5df2\u7ecf\u8fc7\u80e1")
+    discards: Optional[List[str]] = Field(default=None)
+    opponent_discards: Optional[List[str]] = Field(default=None)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_payload(cls, values):
+        return _legacy_translate(values)
 
 
 # ---------- helpers: V3 result -> legacy shape -------------------------- #
@@ -207,62 +340,58 @@ def _build_state(
     return state
 
 
-def _shape_discard(result: Dict) -> Dict:
-    """Translate orchestrator's rich SearchResult into the legacy
-    `recommendation` dict shape that the app expects."""
-    tile = result.get("tile") or ""
-    # total_ev can be large; keep it as-is but expose a normalized "score"
-    # similar to the legacy V2 field.
-    total_ev = float(result.get("total_ev", 0.0))
-    shanten = result.get("shanten")
-    if shanten is None:
-        # Older V2/heuristic responses don't include shanten; derive a
-        # rough value from search_depth so the UI still has something.
-        shanten = int(result.get("search_depth", 0) or 0)
-    agari_prob = float(result.get("agari_prob", 0.0) or 0.0)
-    houjuu_prob = float(result.get("houjuu_prob", 0.0) or 0.0)
-    defense_score = float(result.get("defense_score", 0.0) or 0.0)
+def _to_app_tile(tile_raw) -> str:
+    """Translate a tile emitted by the V3 engine (`E`/`W`/`S`/`N`/`P`/`F`/`C`
+    for honors, `1m`/`1s` variants, ...) into the canonical codes that
+    `majiang/frontend` understands (`east/south/west/north/white/green/red`,
+    `1w..9w`, `1t..9t`). Unknown tokens pass through unchanged so a bad
+    mapping never takes the whole response down."""
+    if not tile_raw:
+        return ""
+    raw = str(tile_raw).strip()
+    if not raw:
+        return ""
+    try:
+        return _canonical_tile(raw)
+    except HTTPException:
+        return raw
 
-    candidates = result.get("candidate_scores") or {}
-    explanation_bits = [result.get("chosen_by", "")]
+
+def _map_candidate_scores_for_app(candidate_scores) -> Dict[str, float]:
+    """`result.vue` calls `score.toFixed(2)` on every value in
+    `meta.scores`, so values must be numeric. Keys are translated the
+    same way tiles are so 'E' doesn't show up in the UI."""
+    out: Dict[str, float] = {}
+    if not isinstance(candidate_scores, dict):
+        return out
+    for raw_key, raw_val in candidate_scores.items():
+        if not isinstance(raw_val, (int, float)):
+            continue
+        key = str(raw_key)
+        # "pass->9t" / "pass" / tile-only candidates: only try to
+        # translate the tile portion when it's a single tile code.
+        if "->" in key:
+            head, _, tail = key.partition("->")
+            tail_app = _to_app_tile(tail) if tail else tail
+            key_out = f"{head}->{tail_app}" if tail_app else head
+        else:
+            key_out = _to_app_tile(key) or key
+        out[key_out] = round(float(raw_val), 3)
+    return out
+
+
+def _discard_explanation(tile: str, agari_prob: float, houjuu_prob: float, chosen_by: str) -> str:
+    bits = [chosen_by] if chosen_by else []
     if tile:
-        explanation_bits.append(f"\u6253{tile}")
+        bits.append(f"\u6253{tile}")
     if agari_prob > 0:
-        explanation_bits.append(f"\u548c\u724c\u6982\u7387 {agari_prob:.1%}")
+        bits.append(f"\u548c\u724c\u6982\u7387 {agari_prob:.1%}")
     if houjuu_prob > 0.01:
-        explanation_bits.append(f"\u653e\u70ae\u6982\u7387 {houjuu_prob:.1%}")
-    explanation = ", ".join(bit for bit in explanation_bits if bit)
-
-    return {
-        "tile": tile,
-        "score": round(total_ev, 3),
-        "shanten": int(shanten),
-        "bonus_value": round(agari_prob * 1000.0, 3),
-        "risk_value": round(houjuu_prob * 1000.0, 3),
-        "defense_score": round(defense_score, 3),
-        "agari_prob": round(agari_prob, 6),
-        "houjuu_prob": round(houjuu_prob, 6),
-        "explanation": explanation or "v3 recommendation",
-        "confidence": _confidence_from_shanten(int(shanten) if shanten is not None else None),
-        "engine": result.get("engine", "v3"),
-        "candidate_scores": candidates,
-        "fallback_reason": result.get("fallback_reason", ""),
-    }
+        bits.append(f"\u653e\u70ae\u6982\u7387 {houjuu_prob:.1%}")
+    return ", ".join(bit for bit in bits if bit) or "v3 recommendation"
 
 
-def _shape_response(result: Dict) -> Dict:
-    action = result.get("action") or "pass"
-    tile = result.get("tile") or ""
-    shanten = result.get("shanten", 0)
-    if shanten is None:
-        shanten = 0
-    agari_prob = float(result.get("agari_prob", 0.0) or 0.0)
-    houjuu_prob = float(result.get("houjuu_prob", 0.0) or 0.0)
-    defense_score = float(result.get("defense_score", 0.0) or 0.0)
-    total_ev = float(result.get("total_ev", 0.0) or 0.0)
-
-    # Keep a text explanation short; UI can always display candidate_scores
-    # for full detail.
+def _response_explanation(action: str, tile: str, agari_prob: float, houjuu_prob: float) -> str:
     bits = [f"action={action}"]
     if tile:
         bits.append(f"tile={tile}")
@@ -270,39 +399,166 @@ def _shape_response(result: Dict) -> Dict:
         bits.append(f"agari={agari_prob:.1%}")
     if houjuu_prob > 0.01:
         bits.append(f"houjuu={houjuu_prob:.1%}")
-    explanation = ", ".join(bits)
+    return ", ".join(bits)
+
+
+def _shape_discard(result: Dict) -> Dict:
+    """Translate orchestrator's SearchResult into the flat shape the
+    uni-app frontend expects. The app assigns this dict directly to
+    `lastRecommendation`, so fields like `confidence`, `action`,
+    `explanation`, and `meta.scores` must exist at the top level."""
+    tile = _to_app_tile(result.get("tile"))
+    total_ev = float(result.get("total_ev", 0.0))
+    shanten = result.get("shanten")
+    if shanten is None:
+        shanten = int(result.get("search_depth", 0) or 0)
+    agari_prob = float(result.get("agari_prob", 0.0) or 0.0)
+    houjuu_prob = float(result.get("houjuu_prob", 0.0) or 0.0)
+    defense_score = float(result.get("defense_score", 0.0) or 0.0)
+    candidates = result.get("candidate_scores") or {}
 
     return {
-        "action": action,
+        # Fields the uni-app reads directly from `lastRecommendation`.
+        "success": True,
+        "action": "discard",
         "tile": tile,
+        "confidence": _confidence_from_shanten(int(shanten) if shanten is not None else None),
+        "explanation": _discard_explanation(tile, agari_prob, houjuu_prob, result.get("chosen_by", "")),
+        "ai_type": "linhai-v3",
+        # Extra V3-native fields kept for debugging / richer UI.
         "score": round(total_ev, 3),
         "shanten": int(shanten),
-        "bonus_value": round(agari_prob * 1000.0, 3),
-        "risk_value": round(houjuu_prob * 1000.0, 3),
-        "defense_score": round(defense_score, 3),
         "agari_prob": round(agari_prob, 6),
         "houjuu_prob": round(houjuu_prob, 6),
-        "explanation": explanation,
-        "confidence": _confidence_from_shanten(int(shanten)),
+        "defense_score": round(defense_score, 3),
+        "bonus_value": round(agari_prob * 1000.0, 3),
+        "risk_value": round(houjuu_prob * 1000.0, 3),
         "engine": result.get("engine", "v3"),
-        "candidate_scores": result.get("candidate_scores", {}),
         "fallback_reason": result.get("fallback_reason", ""),
+        "meta": {
+            # `result.vue` renders this block; keys must be numeric scores.
+            "scores": _map_candidate_scores_for_app(candidates),
+            "engine": result.get("engine", "v3"),
+            "shanten": int(shanten),
+            "agari_prob": round(agari_prob, 6),
+            "houjuu_prob": round(houjuu_prob, 6),
+            "defense_score": round(defense_score, 3),
+            "fallback_reason": result.get("fallback_reason", ""),
+        },
+    }
+
+
+def _shape_response(result: Dict, available_actions: List[str]) -> Dict:
+    """Translate the orchestrator's response-action result into the
+    `{actions: [...], recommended: ..., meta: {...}}` shape expected by
+    `normalizeResponseResult` on the frontend. We must list one entry
+    per action the player can pick so the app can highlight the one
+    matching `recommended`."""
+    recommended = (result.get("action") or "pass").strip().lower() or "pass"
+    tile = _to_app_tile(result.get("tile"))
+    shanten = result.get("shanten", 0)
+    if shanten is None:
+        shanten = 0
+    agari_prob = float(result.get("agari_prob", 0.0) or 0.0)
+    houjuu_prob = float(result.get("houjuu_prob", 0.0) or 0.0)
+    defense_score = float(result.get("defense_score", 0.0) or 0.0)
+    total_ev = float(result.get("total_ev", 0.0) or 0.0)
+    candidate_scores = result.get("candidate_scores") or {}
+
+    # Build one `{action, tile, confidence, explanation}` entry per
+    # action that was originally offered. The uni-app's
+    # `normalizeResponseResult` looks up the entry whose `action`
+    # matches `recommended`.
+    actions_out: List[Dict] = []
+    seen = set()
+    ordered = list(available_actions) or ["pass"]
+    if recommended not in ordered:
+        ordered.append(recommended)
+    for act_raw in ordered:
+        act = (act_raw or "").strip().lower()
+        if not act or act in seen:
+            continue
+        seen.add(act)
+        is_chosen = act == recommended
+        entry_tile = tile if is_chosen and tile else ""
+        entry_conf = _confidence_from_shanten(int(shanten)) if is_chosen else 0.3
+        entry_expl = (
+            _response_explanation(act, entry_tile, agari_prob, houjuu_prob)
+            if is_chosen
+            else f"action={act}"
+        )
+        actions_out.append(
+            {
+                "action": act,
+                "tile": entry_tile,
+                "confidence": entry_conf,
+                "explanation": entry_expl,
+            }
+        )
+
+    return {
+        "success": True,
+        "recommended": recommended,
+        "actions": actions_out,
+        "ai_type": "linhai-v3",
+        # Keep these at the top too so code paths that skip
+        # normalizeResponseResult still render cleanly.
+        "action": recommended,
+        "tile": tile,
+        "confidence": _confidence_from_shanten(int(shanten)),
+        "explanation": _response_explanation(recommended, tile, agari_prob, houjuu_prob),
+        "score": round(total_ev, 3),
+        "shanten": int(shanten),
+        "agari_prob": round(agari_prob, 6),
+        "houjuu_prob": round(houjuu_prob, 6),
+        "defense_score": round(defense_score, 3),
+        "engine": result.get("engine", "v3"),
+        "fallback_reason": result.get("fallback_reason", ""),
+        "meta": {
+            "scores": _map_candidate_scores_for_app(candidate_scores),
+            "engine": result.get("engine", "v3"),
+            "agari_prob": round(agari_prob, 6),
+            "houjuu_prob": round(houjuu_prob, 6),
+            "defense_score": round(defense_score, 3),
+            "fallback_reason": result.get("fallback_reason", ""),
+        },
     }
 
 
 # ---------- routes ----------------------------------------------------- #
 
 
-@router.post("/recommend", response_model=AIRecommendResponse)
-def recommend_discard(request: AIRecommendRequest) -> AIRecommendResponse:
+def _opponent_discards_map(
+    wind_seat: int,
+    own_discards: Optional[List[str]],
+    opp_discards: Optional[List[str]],
+    opp_seat_hint: Optional[int] = None,
+) -> Dict[int, List[str]]:
+    """Build the `opponent_discards_per_seat` dict from the legacy flat
+    lists. Opponent discards go to the first non-my seat, or to
+    `opp_seat_hint` when provided (e.g. `from_player` in response calls)."""
+    mapping: Dict[int, List[str]] = {}
+    if own_discards:
+        mapping[int(wind_seat)] = list(own_discards)
+    if opp_discards:
+        if opp_seat_hint is not None and int(opp_seat_hint) != int(wind_seat):
+            target_seat = int(opp_seat_hint)
+        else:
+            target_seat = next((s for s in range(4) if s != int(wind_seat)), 1)
+        mapping.setdefault(target_seat, []).extend(opp_discards)
+    return mapping
+
+
+@router.post("/recommend")
+def recommend_discard(request: AIRecommendRequest) -> Dict:
     """Best discard recommendation.
 
-    Byte-compatible with legacy `majiang/backend` /ai/recommend: same
-    request schema, same top-level `{success, recommendation, message}`
-    envelope. The `recommendation` dict is a superset of the legacy
-    fields (we add `agari_prob`, `houjuu_prob`, `defense_score`,
-    `candidate_scores`, `engine`, `fallback_reason`) so the existing UI
-    keeps working while new UI can surface richer info.
+    Returns the flat `{action, tile, confidence, explanation, meta: {...}}`
+    shape that the uni-app frontend uses directly (no `recommendation`
+    wrapper). See `majiang/frontend/pages/index/index.vue` ->
+    `requestRecommendation`, where `result = await
+    getDiscardRecommendation(...)` is assigned straight to
+    `lastRecommendation` and consumed as-is by the templates.
     """
     try:
         state = _build_state(
@@ -310,9 +566,12 @@ def recommend_discard(request: AIRecommendRequest) -> AIRecommendResponse:
             request.wind_seat,
             wall_remaining=request.wall_remaining,
             opponents_state=request.opponents_state,
+            opponent_discards_per_seat=_opponent_discards_map(
+                request.wind_seat, request.discards, request.opponent_discards
+            ),
         )
         result = get_orchestrator().recommend(state)
-        return AIRecommendResponse(success=True, recommendation=_shape_discard(result))
+        return _shape_discard(result)
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -327,13 +586,24 @@ def recommend_response(request: AIResponseRequest) -> Dict:
     though the frontend already calls it via `getResponseRecommendation`.
     """
     try:
+        # Merge opponent-discards list (if the app sent one) with the freshly
+        # discarded tile, so the engine sees the full river when computing
+        # defense / risk features.
+        opp_river = list(request.opponent_discards or [])
+        opp_river.append(request.discarded_tile)
+        discard_map = _opponent_discards_map(
+            request.wind_seat,
+            request.discards,
+            opp_river,
+            opp_seat_hint=request.from_player,
+        )
         state = _build_state(
             request.hand or [],
             request.wind_seat,
             wall_remaining=request.wall_remaining,
             opponents_state=request.opponents_state,
             passed_hu_this_round=request.passed_hu_this_round,
-            opponent_discards_per_seat={request.from_player: [request.discarded_tile]},
+            opponent_discards_per_seat=discard_map,
         )
         discarded = _canonical_tile(request.discarded_tile)
         actions = [action.strip().lower() for action in request.available_actions if action.strip()]
@@ -342,7 +612,7 @@ def recommend_response(request: AIResponseRequest) -> Dict:
         result = get_orchestrator().recommend_response(
             state, discarded, int(request.from_player), actions
         )
-        return {"success": True, "recommendation": _shape_response(result)}
+        return _shape_response(result, actions)
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -360,13 +630,18 @@ def recommend_all(request: AIAllRecommendationsRequest) -> Dict:
             request.hand,
             request.wind_seat,
             wall_remaining=request.wall_remaining,
+            opponent_discards_per_seat=_opponent_discards_map(
+                request.wind_seat, request.discards, request.opponent_discards
+            ),
         )
         result = get_orchestrator().recommend(state)
         ranked = []
         for tile, score in (result.get("candidate_scores") or {}).items():
+            if not isinstance(score, (int, float)):
+                continue
             ranked.append(
                 {
-                    "tile": tile,
+                    "tile": _to_app_tile(tile),
                     "score": round(float(score), 3),
                     "confidence": _confidence_from_shanten(result.get("shanten")),
                 }

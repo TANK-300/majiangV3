@@ -105,3 +105,76 @@ python3 tools/selfplay_eval.py --policy-a neural:params/neural_v1 --policy-b heu
   - `fallback_rate`
   - `truncate_rate`
   - `avg_search_nodes`
+
+## A-2b：GBDT 模型的训练→上线流水线
+
+A-2b 把六个 head 切换到 LightGBM GBDT，可以学到"丢单张字牌最优"这类非
+线性规则。线性模型做不到这一点——参见下方的退化样例。
+
+### 退化样例（PR-1 之前）
+
+手牌：`2w 3w 6w 6w 7w 7w 8w 4t 4t 5t 5t 9t 9t north`（剩余一张孤张字牌
+`north`，对手弃牌里已经出过 7 张筒）。
+
+- 老线性 V3：推荐打 `2w`，`agari_prob=26%`、`houjuu_prob=26.7%`。
+  从 Mahjong 打法上看，应该先扔 `north`——它没有任何搭子潜力，且牌河里
+  没有对应字牌，放炮风险极低。线性模型只能输出"特征的加权和"，学不到
+  "孤张字牌优先丢弃"这种条件规则。
+- 新 GBDT V3：推荐打 `north`（hai=34），`chosen_by=search`。
+  `agari_gbdt_` 在 `wall_remaining` 高且 `hand_t_north=1` 时命中一个叶子，
+  把 agari 贡献压得比 `2w` 高，于是搜索就正确地选择了 `north`。
+
+### 一键训练流水线
+
+```bash
+# 1. 生成样本（2-3 万行即可触发 GBDT 路径）
+python3 tools/selfplay_sample.py \
+    --policy-a heuristic --policy-b random \
+    --games 200 --seed 7 \
+    --output /tmp/a2b_samples.jsonl
+
+# 2. 训练六个 head
+for task in agari_prob tenpai_prob houjuu_prob betaori tsumo_num ryukyoku_prob; do
+    python3 tools/train_model_stub.py \
+        --task $task \
+        --version-dir /tmp/a2b_bundle \
+        --dataset /tmp/a2b_samples.jsonl \
+        --validation-split 0.2 \
+        --model-kind auto \
+        --n-estimators 200 --num-leaves 31 --gbdt-min-rows 200
+done
+
+# 3. 让 backend 加载新 bundle
+export LINHAI_V3_PARAMS_DIR=/tmp/a2b_bundle
+# （重启 uvicorn，或在跑 selfplay_eval 时设该环境变量）
+
+# 4. 对局评估
+python3 tools/selfplay_eval.py \
+    --policy-a orchestrator --policy-b heuristic \
+    --games 200 --seed 42
+```
+
+### 判断 GBDT 是否真的上线
+
+- `GET /debug/engine_status` 的 `v3.params_dir` 应指向新 bundle 目录。
+- `v3.reason == "ok"` 或 `"ok_partial"`（混合 bundle 时）。
+- 打开 `$LINHAI_V3_PARAMS_DIR/v3/agari_prob/model.json`：
+  `model_type` 必须是 `"lightgbm_gbdt"`；若仍是 `logistic_regression`，说明
+  LightGBM 没装（或数据 < `--gbdt-min-rows`）自动回退了。
+- 跑 `python3 -m pytest tests/python/test_gbdt_loader.py` 确认 C++ 端到端
+  加载路径没坏。
+
+### 常见坑
+
+1. **老部署的 `.so` 覆盖了新编译产物**：如果 `backend/linhai_v3.*.so`
+   比 `engine/linhai_v3.*.so` 旧，Python 会优先加载旧的，GBDT loader
+   不存在，bundle 会被判"无效"全部走 heuristic。删掉 `backend/*.so`
+   或重新 `engine/setup.py build_ext --inplace` 即可。
+2. **GBDT 数据量不足时沉默回退到 linear**：`--model-kind=auto` 且行数
+   < `--gbdt-min-rows`（默认 200）时，`train_model_stub.py` 会用 sklearn
+   linear 兜底。想强制拒绝，用 `--model-kind=gbdt`（会写
+   `model_type=gbdt_unavailable`）。
+3. **训练/推理特征不一致静默失效**：`V3GBDTModel` 按 `feature_names`
+   下标读 `x[feat]`，顺序固定在训练时写入 `model.json`；C++ 推理按名字
+   查表再对齐，名字对不上等于拿 0。任何新特征必须同时更新训练侧
+   `build_model_features()` 和 C++ 侧 `build_state_features()`。

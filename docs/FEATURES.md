@@ -40,3 +40,68 @@ V3 的模型走"Python 训练 + C++ 推理"两端。特征名**必须完全一�
 - 筋/壁/现物（需要对每张牌做规则判定）
 - 副露类型（peng/chi/gang/anka）one-hot
 
+## A-2b：GBDT (LightGBM) 模型 schema
+
+A-2b 把六个 head（`agari_prob` / `tenpai_prob` / `houjuu_prob` / `betaori` /
+`tsumo_num` / `ryukyoku_prob`）从线性模型升级为 LightGBM GBDT。线性模型
+无法表达"丢一张单张字牌最优"这类非线性规则（见 `docs/EVAL.md` 里的
+`north` 退化样例）——GBDT 的树结构可以学到这类条件逻辑。
+
+**训练入口**：`tools/train_model_stub.py --model-kind=auto|gbdt|linear`
+
+- `auto`（默认）：优先用 LightGBM GBDT；LightGBM 不可用或行数不足时回退到
+  sklearn linear / 手写 SGD，C++ 侧零兼容问题。
+- `gbdt`：强制 GBDT；LightGBM 不在时写出 `model_type=gbdt_unavailable`，
+  发布脚本能据此拒绝推上线。
+- `linear`：完全跳过 GBDT，沿用 A-2a 的 `logistic_regression` / `linear_regression`
+  schema；pin 在 PR-2 前的 C++ 部署可以继续用这一条。
+
+**model.json schema**（`model_type == "lightgbm_gbdt"`）：
+
+```json
+{
+  "task": "agari_prob",
+  "label_key": "task_labels.can_win_label",
+  "model_type": "lightgbm_gbdt",
+  "objective": "binary",            // 或 "regression"（仅 tsumo_num 用）
+  "init_score": -0.1234,            // LightGBM 隐式先验；C++ 必须加回去
+  "feature_names": ["wall_remaining", ...],
+  "trees": [
+    {
+      "nodes": [
+        {"feat": 0, "thr": 20.5, "left": 1, "right": 2, "leaf_value": 0.0},
+        {"feat": -1, "thr": 0.0, "left": -1, "right": -1, "leaf_value": -1.2},
+        {"feat": -1, "thr": 0.0, "left": -1, "right": -1, "leaf_value":  1.3}
+      ]
+    },
+    ...
+  ],
+  "n_trees": 50,
+  "metrics": {"train_accuracy": 0.87, "val_accuracy": 0.83},
+  "fitter": "lightgbm"
+}
+```
+
+**关键契约**：
+
+- 每棵树的 `nodes[0]` 必定是根；叶子节点用 `feat = -1` + `left = right = -1` 标识。
+- `feat` 字段是 `feature_names` 数组的索引（不是名字），C++ 侧
+  `predict_gbdt` 会一次性把 `feature_names[i]` 对应的值从 features
+  map 查出来填到 `x[i]`，之后的树游走只用 `x[feat]`。
+- GBDT bundle **故意不写** `feature_means` / `feature_stds` / `weights`。
+  这是"老 linear C++ 加载器拒绝它 → 回退 heuristic"的安全降级阀门。
+- 分裂语义固定为 `x[feat] <= thr` 走 `left`，其余走 `right`——和
+  `train_model_stub._flatten_lightgbm_tree` 对 LightGBM `decision_type="<="`
+  的假定一一对应。
+
+**C++ 推理路径**：`engine/share/linhai_search_v3.cpp`
+
+- `load_v3_head(path, linear_out, gbdt_out)` 根据 JSON `model_type` 字段
+  分发到 `load_v3_model`（线性）或 `load_v3_gbdt`（GBDT）。
+- `predict_head(linear, gbdt, features)` 的优先级：GBDT 已加载则走 GBDT，
+  否则走 linear，否则返回 0（`estimate_*_prob` 已在上层短路到 heuristic）。
+- `LinhaiSearchEngineV3` 同时持有六对 `V3LinearModel` 和 `V3GBDTModel`，
+  允许混合 bundle（一部分 head GBDT、一部分 head linear）——回归测试
+  `tests/python/test_gbdt_loader.py::test_gbdt_loader_mixed_with_linear`
+  专门锁这个行为。
+

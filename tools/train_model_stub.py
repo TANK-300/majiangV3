@@ -250,6 +250,242 @@ def fit_linear_regression(
     }
 
 
+def _flatten_lightgbm_tree(root: Dict) -> List[Dict]:
+    """Flatten LightGBM's nested ``tree_structure`` into a list of nodes.
+
+    Each node dict has a uniform shape::
+
+        {"feat": int, "thr": float, "left": int, "right": int, "leaf_value": float}
+
+    Leaf nodes use ``feat=-1`` and ``left=right=-1``; internal nodes reference
+    their children by index into the same list. This matches exactly what the
+    C++ ``V3GBDTModel`` loader expects in PR-2, so the on-disk ``model.json``
+    stays portable.
+
+    NOTE: LightGBM uses ``decision_type`` to indicate the split predicate
+    (``"<="`` vs ``"<"`` vs ``"=="``). For numeric features we train here we
+    always get ``"<="``; we assert this at parse time so we never silently
+    produce a miscalibrated tree.
+    """
+    nodes: List[Dict] = []
+
+    def visit(node: Dict) -> int:
+        idx = len(nodes)
+        nodes.append({})
+
+        if "split_feature" not in node:
+            leaf_value = node.get("leaf_value")
+            if leaf_value is None:
+                raise ValueError(f"malformed LightGBM leaf node: {node!r}")
+            nodes[idx] = {
+                "feat": -1,
+                "thr": 0.0,
+                "left": -1,
+                "right": -1,
+                "leaf_value": float(leaf_value),
+            }
+            return idx
+
+        decision_type = node.get("decision_type", "<=")
+        if decision_type not in ("<=",):
+            raise ValueError(
+                f"unsupported LightGBM decision_type {decision_type!r}; "
+                "A-2b C++ loader only supports '<=' splits for now"
+            )
+
+        left_idx = visit(node["left_child"])
+        right_idx = visit(node["right_child"])
+        nodes[idx] = {
+            "feat": int(node["split_feature"]),
+            "thr": float(node["threshold"]),
+            "left": left_idx,
+            "right": right_idx,
+            "leaf_value": 0.0,
+        }
+        return idx
+
+    visit(root)
+    return nodes
+
+
+def _predict_flat_tree(nodes: Sequence[Dict], x: Sequence[float]) -> float:
+    idx = 0
+    while nodes[idx]["feat"] >= 0:
+        node = nodes[idx]
+        idx = node["left"] if x[node["feat"]] <= node["thr"] else node["right"]
+    return float(nodes[idx]["leaf_value"])
+
+
+def _try_train_with_lightgbm(
+    x_rows: Sequence[Sequence[float]],
+    labels: Sequence[float],
+    is_binary: bool,
+    validation_split: float,
+    n_estimators: int,
+    num_leaves: int,
+    max_depth: int,
+    gbdt_learning_rate: float,
+    min_training_rows: int,
+) -> Optional[Dict]:
+    """A-2b: train a LightGBM GBDT and serialize it into the PR-2 schema.
+
+    We prefer GBDT over the linear models because the linear family cannot
+    express non-linear rules like "drop a lone honor tile first" (see the
+    ``north`` regression case in ``docs/EVAL.md``). Falls back to ``None`` so
+    callers can degrade to sklearn linear / handrolled SGD when:
+
+    * LightGBM isn't installed (test containers, minimal CI),
+    * there aren't enough rows to avoid overfitting to noise,
+    * or the binary target has only one class.
+
+    The returned dict intentionally omits ``feature_means`` / ``feature_stds``
+    because GBDT doesn't need scaling. That also makes the emitted JSON
+    **incompatible with the old linear C++ loader**, which will politely fail
+    to load and fall back to heuristic -- i.e. safe degradation before PR-2
+    ships the GBDT-aware C++ loader.
+    """
+    try:
+        import lightgbm as lgb  # type: ignore
+        import numpy as np  # type: ignore
+    except Exception:
+        return None
+
+    n_rows = len(labels)
+    if n_rows < max(min_training_rows, 1):
+        return None
+    if is_binary and len(set(labels)) < 2:
+        return None
+
+    # LightGBM >= 4 rejects raw list-of-list inputs (TypeError: "Data list
+    # can only be of ndarray or Sequence"). Convert once up-front.
+    x_array = np.asarray([list(row) for row in x_rows], dtype=np.float64)
+    y_array = np.asarray([float(v) for v in labels], dtype=np.float64)
+
+    x_val = None
+    y_val = None
+    if validation_split > 0.0 and n_rows >= 8:
+        try:
+            from sklearn.model_selection import train_test_split  # type: ignore
+        except Exception:
+            x_train, y_train = x_array, y_array
+        else:
+            x_train, x_val, y_train, y_val = train_test_split(
+                x_array,
+                y_array,
+                test_size=validation_split,
+                random_state=0,
+                stratify=y_array if is_binary and len(set(y_array.tolist())) == 2 else None,
+            )
+    else:
+        x_train, y_train = x_array, y_array
+
+    objective = "binary" if is_binary else "regression"
+    params = {
+        "objective": objective,
+        "learning_rate": gbdt_learning_rate,
+        "num_leaves": num_leaves,
+        "max_depth": max_depth,
+        # tiny fixture datasets would otherwise violate min_data_in_leaf=20 default
+        "min_data_in_leaf": max(1, len(y_train) // 20),
+        "feature_pre_filter": False,
+        "deterministic": True,
+        "force_col_wise": True,
+        "verbose": -1,
+    }
+    if is_binary:
+        params["metric"] = "binary_logloss"
+    else:
+        params["metric"] = "rmse"
+
+    train_ds = lgb.Dataset(x_train, label=y_train, free_raw_data=False)
+    valid_sets = [train_ds]
+    valid_names = ["train"]
+    if x_val is not None and len(x_val) > 0:
+        val_ds = lgb.Dataset(x_val, label=y_val, reference=train_ds, free_raw_data=False)
+        valid_sets.append(val_ds)
+        valid_names.append("val")
+
+    booster = lgb.train(
+        params,
+        train_ds,
+        num_boost_round=n_estimators,
+        valid_sets=valid_sets,
+        valid_names=valid_names,
+        callbacks=[lgb.log_evaluation(period=0)],
+    )
+
+    dumped = booster.dump_model()
+    trees_raw = dumped.get("tree_info", [])
+    trees_flat: List[List[Dict]] = [_flatten_lightgbm_tree(t["tree_structure"]) for t in trees_raw]
+
+    # A-2b: derive the implicit init_score (prior) by comparing LightGBM's own
+    # raw prediction on a known row to the sum of leaf values computed via our
+    # flat-tree format. If they disagree, the C++ inference would drift from
+    # LightGBM's -- the delta captures the "init" constant LightGBM adds for
+    # binary objectives (log(p/(1-p))).
+    probe_source = x_train if len(x_train) > 0 else x_array
+    probe_row = np.asarray(probe_source[0], dtype=np.float64)
+    lgb_raw = float(booster.predict(probe_row.reshape(1, -1), raw_score=True)[0])
+    my_raw = sum(_predict_flat_tree(tree, probe_row.tolist()) for tree in trees_flat)
+    init_score = lgb_raw - my_raw
+
+    # Sanity: the discrepancy must be a *constant* across samples. Probe a
+    # few extra rows; if it drifts, our flat-tree semantics diverges from
+    # LightGBM and we refuse to ship (caller falls back to linear).
+    probe_extra_count = min(3, max(0, len(probe_source) - 1))
+    for i in range(1, 1 + probe_extra_count):
+        row = np.asarray(probe_source[i], dtype=np.float64)
+        lgb_raw_i = float(booster.predict(row.reshape(1, -1), raw_score=True)[0])
+        my_raw_i = sum(_predict_flat_tree(tree, row.tolist()) for tree in trees_flat)
+        if abs((lgb_raw_i - my_raw_i) - init_score) > 1e-4:
+            return None
+
+    metrics: Dict[str, float] = {}
+    has_val = x_val is not None and len(x_val) > 0
+    if is_binary:
+        preds_train = booster.predict(x_train)
+        metrics["train_accuracy"] = float(
+            sum((p >= 0.5) == (y >= 0.5) for p, y in zip(preds_train, y_train)) / max(len(y_train), 1)
+        )
+        train_logloss = -sum(
+            (y * math.log(max(min(p, 1.0 - 1e-6), 1e-6))
+             + (1.0 - y) * math.log(max(min(1.0 - p, 1.0 - 1e-6), 1e-6)))
+            for p, y in zip(preds_train, y_train)
+        ) / max(len(y_train), 1)
+        metrics["train_logloss"] = float(train_logloss)
+        if has_val:
+            preds_val = booster.predict(x_val)
+            metrics["val_accuracy"] = float(
+                sum((p >= 0.5) == (y >= 0.5) for p, y in zip(preds_val, y_val)) / max(len(y_val), 1)
+            )
+    else:
+        preds_train = booster.predict(x_train)
+        metrics["train_rmse"] = float(
+            math.sqrt(sum((p - y) ** 2 for p, y in zip(preds_train, y_train)) / max(len(y_train), 1))
+        )
+        metrics["train_mae"] = float(
+            sum(abs(p - y) for p, y in zip(preds_train, y_train)) / max(len(y_train), 1)
+        )
+        if has_val:
+            preds_val = booster.predict(x_val)
+            metrics["val_rmse"] = float(
+                math.sqrt(sum((p - y) ** 2 for p, y in zip(preds_val, y_val)) / max(len(y_val), 1))
+            )
+
+    return {
+        "model_type": "lightgbm_gbdt",
+        "objective": objective,
+        "init_score": init_score,
+        # `trees[i].nodes` is the flat list produced by _flatten_lightgbm_tree;
+        # wrapping it in a dict gives us room to add per-tree metadata later
+        # (e.g. shrinkage) without another schema break.
+        "trees": [{"nodes": tree} for tree in trees_flat],
+        "n_trees": len(trees_flat),
+        "metrics": metrics,
+        "_fitter": "lightgbm",
+    }
+
+
 def _try_train_with_sklearn(
     x_rows: Sequence[Sequence[float]],
     labels: Sequence[float],
@@ -336,21 +572,103 @@ def train_model(
     epochs: int,
     l2: float,
     validation_split: float = 0.0,
+    model_kind: str = "auto",
+    n_estimators: int = 200,
+    num_leaves: int = 31,
+    max_depth: int = -1,
+    gbdt_learning_rate: float = 0.05,
+    gbdt_min_rows: int = 200,
 ) -> Dict:
+    """Train a single-head model and serialize it for the C++ V3 engine.
+
+    The ``model_kind`` selector controls the algorithm family:
+
+    * ``"auto"`` (default): try LightGBM GBDT first (A-2b), then sklearn
+      linear / ridge (A-2a), then the handrolled SGD (stub).
+    * ``"gbdt"``: force LightGBM GBDT; return a failure-shaped record if
+      LightGBM is unavailable instead of silently downgrading.
+    * ``"linear"``: explicitly skip GBDT and use the linear family. Useful for
+      pinned old deployments that haven't shipped the PR-2 C++ loader yet.
+    """
     feature_names = collect_feature_names(rows)
     means, stds = compute_scaler(rows, feature_names)
     x_rows = vectorize_rows(rows, feature_names, means, stds)
+    # GBDT uses the raw unscaled features (tree splits are scale-invariant);
+    # this also lets the C++ side use the same name->value lookup table and
+    # skip the means/stds step entirely at inference time.
+    x_rows_raw = [[row.get(name, 0.0) for name in feature_names] for row in rows]
     is_binary = all(label in {0.0, 1.0} for label in labels)
 
-    sk_fit = _try_train_with_sklearn(x_rows, labels, is_binary, l2, validation_split)
+    try_gbdt = model_kind in ("auto", "gbdt")
+    try_linear_sklearn = model_kind in ("auto", "linear")
+    allow_handrolled = model_kind in ("auto", "linear")
+
+    gbdt_fit = None
+    if try_gbdt:
+        gbdt_fit = _try_train_with_lightgbm(
+            x_rows_raw,
+            labels,
+            is_binary,
+            validation_split=validation_split,
+            n_estimators=n_estimators,
+            num_leaves=num_leaves,
+            max_depth=max_depth,
+            gbdt_learning_rate=gbdt_learning_rate,
+            min_training_rows=gbdt_min_rows,
+        )
+
+    if gbdt_fit is not None:
+        fitter = gbdt_fit.pop("_fitter", "lightgbm")
+        # A-2b schema: we intentionally *do not* persist feature_means/stds
+        # because tree splits are scale-invariant; a stale linear C++ loader
+        # will fail to parse this and safely fall back to heuristic.
+        return {
+            **gbdt_fit,
+            "feature_names": feature_names,
+            "training_examples": len(labels),
+            "fitter": fitter,
+        }
+
+    if model_kind == "gbdt":
+        # Caller explicitly asked for GBDT but we couldn't produce one
+        # (LightGBM not installed, too few rows, or degenerate labels). Emit a
+        # diagnostic shape instead of silently downgrading -- the release
+        # script then refuses to promote this bundle.
+        return {
+            "model_type": "gbdt_unavailable",
+            "feature_names": feature_names,
+            "feature_means": means,
+            "feature_stds": stds,
+            "training_examples": len(labels),
+            "fitter": "none",
+            "metrics": {},
+            "reason": "lightgbm_not_available_or_insufficient_data",
+        }
+
+    if try_linear_sklearn:
+        sk_fit = _try_train_with_sklearn(x_rows, labels, is_binary, l2, validation_split)
+    else:
+        sk_fit = None
+
     if sk_fit is not None:
         fitted = sk_fit
-    elif is_binary:
+    elif allow_handrolled and is_binary:
         fitted = fit_logistic_regression(x_rows, labels, learning_rate, epochs, l2)
         fitted["_fitter"] = "handrolled"
-    else:
+    elif allow_handrolled:
         fitted = fit_linear_regression(x_rows, labels, learning_rate, epochs, l2)
         fitted["_fitter"] = "handrolled"
+    else:
+        return {
+            "model_type": "unavailable",
+            "feature_names": feature_names,
+            "feature_means": means,
+            "feature_stds": stds,
+            "training_examples": len(labels),
+            "fitter": "none",
+            "metrics": {},
+            "reason": "no_fitter_available_for_model_kind",
+        }
 
     fitter = fitted.pop("_fitter", "handrolled")
 
@@ -391,6 +709,27 @@ def main() -> None:
         default=0.0,
         help="Fraction of rows held out for validation metrics (sklearn path only).",
     )
+    # A-2b: GBDT controls
+    parser.add_argument(
+        "--model-kind",
+        choices=["auto", "gbdt", "linear"],
+        default="auto",
+        help=(
+            "Which algorithm family to use. 'auto' tries LightGBM GBDT first "
+            "(A-2b) and falls back to sklearn linear / handrolled SGD; "
+            "'gbdt' requires LightGBM; 'linear' skips GBDT entirely."
+        ),
+    )
+    parser.add_argument("--n-estimators", type=int, default=200, help="Number of boosting rounds for GBDT.")
+    parser.add_argument("--num-leaves", type=int, default=31, help="Max leaves per GBDT tree.")
+    parser.add_argument("--max-depth", type=int, default=-1, help="Max depth per GBDT tree (-1 = unlimited).")
+    parser.add_argument("--gbdt-learning-rate", type=float, default=0.05, help="Learning rate for GBDT.")
+    parser.add_argument(
+        "--gbdt-min-rows",
+        type=int,
+        default=200,
+        help="Minimum labeled rows before GBDT is attempted; otherwise fall back to linear.",
+    )
     args = parser.parse_args()
 
     output_dir = Path(args.version_dir) / "v3" / args.task
@@ -424,6 +763,12 @@ def main() -> None:
         args.epochs,
         args.l2,
         validation_split=args.validation_split,
+        model_kind=args.model_kind,
+        n_estimators=args.n_estimators,
+        num_leaves=args.num_leaves,
+        max_depth=args.max_depth,
+        gbdt_learning_rate=args.gbdt_learning_rate,
+        gbdt_min_rows=args.gbdt_min_rows,
     )
     model_payload = {
         "task": args.task,

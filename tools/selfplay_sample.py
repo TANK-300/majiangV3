@@ -256,6 +256,14 @@ def _sample_to_record(step: SampleStep, result: GameResult, total_steps: int) ->
     # from this step's point of view. Regression target for the tsumo_num
     # model; smaller == we were closer to tenpai.
     tsumo_num_label = max(0, total_steps - step.step_index)
+    # A-2c-2: near-term win flag. Previously tenpai_label == can_win_label which
+    # wasted a training head (both models learned the same thing -- confirmed in
+    # A-2b/A-2c-1 where agari_prob and tenpai_prob had IDENTICAL val metrics).
+    # Defining tenpai as "this seat won AND we are within 5 discards of the end"
+    # gives the GBDT a SHORT-horizon signal: "is this state imminently winnable?"
+    # while can_win_label keeps the LONG-horizon signal "will we win at all?".
+    NEAR_WIN_HORIZON = 5
+    tenpai_near_label = can_win_label and tsumo_num_label <= NEAR_WIN_HORIZON
 
     return {
         "record_id": f"game-{step.game_index:06d}-step-{step.step_index:03d}-{step.seat_wind}",
@@ -286,7 +294,7 @@ def _sample_to_record(step: SampleStep, result: GameResult, total_steps: int) ->
         "source_meta": {
             "houjuu_label": int(bool(houjuu_label)),
             "tsumo_num_label": float(tsumo_num_label),
-            "tenpai_label": int(bool(can_win_label)),  # crude proxy; refined in B-2 model
+            "tenpai_label": int(bool(tenpai_near_label)),  # A-2c-2: near-term win (<=5 discards to game end)
             "betaori_label": int(
                 bool(
                     own_outcome != "loss"

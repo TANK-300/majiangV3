@@ -21,3 +21,6 @@ data/neural_v1/model.onnx
 data/neural_v1/model.onnx.data
 logs/
 
+# Local eval / export outputs
+artifacts/
+

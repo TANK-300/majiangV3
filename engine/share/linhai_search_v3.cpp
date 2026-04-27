@@ -1,5 +1,6 @@
 #include "linhai_search_v3.hpp"
 #include "linhai_shanten_v4.hpp"
+#include "calc_shanten.hpp"
 
 #include <algorithm>
 #include <fstream>
@@ -269,6 +270,14 @@ bool LinhaiSearchEngineV3::load_model_bundle(const std::string& version_dir) {
     betaori_model_ = V3LinearModel();
     tsumo_num_model_ = V3LinearModel();
     ryukyoku_model_ = V3LinearModel();
+    // A-2b: reset GBDT models too. load_v3_head below decides per-head which
+    // of the two gets populated based on the JSON's ``model_type`` field.
+    agari_gbdt_ = V3GBDTModel();
+    tenpai_gbdt_ = V3GBDTModel();
+    houjuu_gbdt_ = V3GBDTModel();
+    betaori_gbdt_ = V3GBDTModel();
+    tsumo_num_gbdt_ = V3GBDTModel();
+    ryukyoku_gbdt_ = V3GBDTModel();
 
     std::string params_dir = version_dir;
     if (!params_dir.empty() && params_dir.back() != '/') {
@@ -280,12 +289,12 @@ bool LinhaiSearchEngineV3::load_model_bundle(const std::string& version_dir) {
         fallback_loaded = fallback_engine_.load_params(params_dir) && fallback_engine_.params_loaded();
     }
 
-    const bool agari_loaded = load_v3_model(params_dir + "v3/agari_prob/model.json", agari_model_);
-    const bool tenpai_loaded = load_v3_model(params_dir + "v3/tenpai_prob/model.json", tenpai_model_);
-    const bool houjuu_loaded = load_v3_model(params_dir + "v3/houjuu_prob/model.json", houjuu_model_);
-    const bool betaori_loaded = load_v3_model(params_dir + "v3/betaori/model.json", betaori_model_);
-    const bool tsumo_num_loaded = load_v3_model(params_dir + "v3/tsumo_num/model.json", tsumo_num_model_);
-    const bool ryukyoku_loaded = load_v3_model(params_dir + "v3/ryukyoku_prob/model.json", ryukyoku_model_);
+    const bool agari_loaded = load_v3_head(params_dir + "v3/agari_prob/model.json", agari_model_, agari_gbdt_);
+    const bool tenpai_loaded = load_v3_head(params_dir + "v3/tenpai_prob/model.json", tenpai_model_, tenpai_gbdt_);
+    const bool houjuu_loaded = load_v3_head(params_dir + "v3/houjuu_prob/model.json", houjuu_model_, houjuu_gbdt_);
+    const bool betaori_loaded = load_v3_head(params_dir + "v3/betaori/model.json", betaori_model_, betaori_gbdt_);
+    const bool tsumo_num_loaded = load_v3_head(params_dir + "v3/tsumo_num/model.json", tsumo_num_model_, tsumo_num_gbdt_);
+    const bool ryukyoku_loaded = load_v3_head(params_dir + "v3/ryukyoku_prob/model.json", ryukyoku_model_, ryukyoku_gbdt_);
 
     const int loaded_count =
         static_cast<int>(agari_loaded) +
@@ -374,6 +383,139 @@ bool LinhaiSearchEngineV3::load_v3_model(const std::string& path, V3LinearModel&
     }
 
     out_model = model;
+    return true;
+}
+
+// A-2b: dispatch on the JSON ``model_type`` field. The linear loader in
+// ``load_v3_model`` is deliberately strict about its required fields
+// (feature_stds, weights, ...). A GBDT-shaped JSON (emitted by
+// tools/train_model_stub.py when LightGBM is used) lacks those fields on
+// purpose, so stale deployments without PR-2 will safely fall back to
+// heuristic. Here we route GBDT JSONs to the new loader instead.
+bool LinhaiSearchEngineV3::load_v3_head(
+    const std::string& path,
+    V3LinearModel& linear_out,
+    V3GBDTModel& gbdt_out
+) {
+    if (!file_exists(path)) {
+        return false;
+    }
+    const json11::Json json = load_json_from_file(path);
+    if (!json.is_object()) {
+        return false;
+    }
+    const auto& object = json.object_items();
+    std::string model_type;
+    const auto mt_it = object.find("model_type");
+    if (mt_it != object.end() && mt_it->second.is_string()) {
+        model_type = mt_it->second.string_value();
+    }
+    if (model_type == "lightgbm_gbdt") {
+        return load_v3_gbdt(path, gbdt_out);
+    }
+    if (model_type == "gbdt_unavailable" || model_type == "unavailable") {
+        // train_model_stub.py emits these when the operator asked for GBDT
+        // but the fitter couldn't produce one. Treat as "no model", which
+        // cascades to the heuristic fallback at inference time.
+        return false;
+    }
+    return load_v3_model(path, linear_out);
+}
+
+bool LinhaiSearchEngineV3::load_v3_gbdt(const std::string& path, V3GBDTModel& out_model) {
+    if (!file_exists(path)) {
+        return false;
+    }
+    const json11::Json json = load_json_from_file(path);
+    if (!json.is_object()) {
+        return false;
+    }
+
+    const auto& object = json.object_items();
+    const auto feature_names_it = object.find("feature_names");
+    const auto trees_it = object.find("trees");
+    const auto objective_it = object.find("objective");
+    if (
+        feature_names_it == object.end() ||
+        trees_it == object.end() ||
+        !feature_names_it->second.is_array() ||
+        !trees_it->second.is_array()
+    ) {
+        return false;
+    }
+
+    V3GBDTModel model;
+    model.task = object.count("task") ? object.at("task").string_value() : "";
+    model.label_key = object.count("label_key") ? object.at("label_key").string_value() : "";
+    model.init_score = json_number_or_default(object.count("init_score") ? object.at("init_score") : json11::Json());
+    if (objective_it != object.end() && objective_it->second.is_string()) {
+        model.logistic = objective_it->second.string_value() == "binary";
+    } else {
+        // Default to logistic so binary heads keep the sigmoid squash even
+        // when the trainer forgot to serialize the objective.
+        model.logistic = true;
+    }
+
+    for (const auto& name_json : feature_names_it->second.array_items()) {
+        model.feature_names.push_back(name_json.string_value());
+    }
+    if (model.feature_names.empty()) {
+        return false;
+    }
+    const int feat_count = static_cast<int>(model.feature_names.size());
+
+    for (const auto& tree_json : trees_it->second.array_items()) {
+        if (!tree_json.is_object()) {
+            return false;
+        }
+        const auto& tree_obj = tree_json.object_items();
+        const auto nodes_it = tree_obj.find("nodes");
+        if (nodes_it == tree_obj.end() || !nodes_it->second.is_array()) {
+            return false;
+        }
+        std::vector<V3GBDTNode> nodes;
+        nodes.reserve(nodes_it->second.array_items().size());
+        for (const auto& node_json : nodes_it->second.array_items()) {
+            if (!node_json.is_object()) {
+                return false;
+            }
+            const auto& node_obj = node_json.object_items();
+            V3GBDTNode node;
+            node.feat = node_obj.count("feat") ? static_cast<int>(node_obj.at("feat").int_value()) : -1;
+            node.thr = node_obj.count("thr") ? json_number_or_default(node_obj.at("thr")) : 0.0f;
+            node.left = node_obj.count("left") ? static_cast<int>(node_obj.at("left").int_value()) : -1;
+            node.right = node_obj.count("right") ? static_cast<int>(node_obj.at("right").int_value()) : -1;
+            node.leaf_value = node_obj.count("leaf_value") ? json_number_or_default(node_obj.at("leaf_value")) : 0.0f;
+            // Structural validation: if the JSON is malformed the predictor
+            // would otherwise segfault or spin forever. Fail fast instead.
+            if (node.feat >= feat_count) {
+                return false;
+            }
+            if (node.feat >= 0 && (node.left < 0 || node.right < 0)) {
+                return false;
+            }
+            nodes.push_back(node);
+        }
+        if (nodes.empty()) {
+            return false;
+        }
+        // Cross-reference child indices after the whole list is built.
+        const int node_count = static_cast<int>(nodes.size());
+        for (const auto& node : nodes) {
+            if (node.feat >= 0) {
+                if (node.left >= node_count || node.right >= node_count) {
+                    return false;
+                }
+            }
+        }
+        model.trees.push_back(std::move(nodes));
+    }
+
+    model.loaded = !model.trees.empty();
+    if (!model.loaded) {
+        return false;
+    }
+    out_model = std::move(model);
     return true;
 }
 
@@ -485,21 +627,68 @@ std::unordered_map<std::string, float> LinhaiSearchEngineV3::build_state_feature
     // A-2a: per-tile counts (hand / remaining-pool / opponent-discards).
     // These names mirror the Python trainer's PER_TILE_FEATURE_ORDER exactly,
     // so the weights learned offline line up with the features computed here.
+    // A-2c-3: also emits safety_t_<tile> flag (genbutsu) and aggregate
+    // defensive signals for houjuu/betaori heads.
     std::array<int, 38> opp_discard_counts = {0};
     for (const int opp_hai : state.opponent_discards) {
         if (opp_hai > 0 && opp_hai < 38) {
             opp_discard_counts[opp_hai] += 1;
         }
     }
+    float safe_in_hand_count = 0.0f;
+    float raw_in_hand_count = 0.0f;
+    int opp_max_tile_disc = 0;
+    int opp_honor_disc_count = 0;
+    int opp_terminal_disc_count = 0;
+    int opp_middle_disc_count = 0;
+    int opp_disc_total = 0;
     for (int hai = 1; hai < 38; hai++) {
         const char* code = tile_code_for_feature(hai);
         if (code == nullptr) {
             continue;
         }
-        features[std::string("hand_t_") + code] = static_cast<float>(state.game_state.tehai[hai]);
-        features[std::string("remain_t_") + code] = static_cast<float>(state.remaining_counts[hai]);
-        features[std::string("opp_disc_t_") + code] = static_cast<float>(opp_discard_counts[hai]);
+        const float hand_c = static_cast<float>(state.game_state.tehai[hai]);
+        const float remain_c = static_cast<float>(state.remaining_counts[hai]);
+        const int opp_disc_c_i = opp_discard_counts[hai];
+        const float opp_disc_c = static_cast<float>(opp_disc_c_i);
+        features[std::string("hand_t_") + code] = hand_c;
+        features[std::string("remain_t_") + code] = remain_c;
+        features[std::string("opp_disc_t_") + code] = opp_disc_c;
+        const float safety_flag = opp_disc_c > 0.0f ? 1.0f : 0.0f;
+        features[std::string("safety_t_") + code] = safety_flag;
+        if (hand_c > 0.0f) {
+            if (safety_flag > 0.0f) {
+                safe_in_hand_count += hand_c;
+            } else if (remain_c > 0.0f) {
+                raw_in_hand_count += hand_c;
+            }
+        }
+        if (opp_disc_c_i > opp_max_tile_disc) {
+            opp_max_tile_disc = opp_disc_c_i;
+        }
+        if (opp_disc_c_i > 0) {
+            opp_disc_total += opp_disc_c_i;
+            if (!is_suited_tile(hai)) {
+                opp_honor_disc_count += opp_disc_c_i;
+            } else {
+                const int rank = tile_rank(hai);
+                if (rank == 1 || rank == 9) {
+                    opp_terminal_disc_count += opp_disc_c_i;
+                } else if (rank == 4 || rank == 5 || rank == 6) {
+                    opp_middle_disc_count += opp_disc_c_i;
+                }
+            }
+        }
     }
+
+    features["safe_in_hand_count"] = safe_in_hand_count;
+    features["raw_in_hand_count"] = raw_in_hand_count;
+    features["opp_honor_disc_count"] = static_cast<float>(opp_honor_disc_count);
+    features["opp_terminal_disc_count"] = static_cast<float>(opp_terminal_disc_count);
+    features["opp_middle_disc_count"] = static_cast<float>(opp_middle_disc_count);
+    features["opp_max_tile_disc"] = static_cast<float>(opp_max_tile_disc);
+    const int opp_meld_denom = state.opponent_meld_count > 0 ? state.opponent_meld_count : 1;
+    features["opp_disc_per_meld"] = static_cast<float>(opp_disc_total) / static_cast<float>(opp_meld_denom);
 
     return features;
 }
@@ -550,6 +739,72 @@ float LinhaiSearchEngineV3::predict_model(
     return model.logistic ? clamp01(1.0f / (1.0f + std::exp(-linear))) : linear;
 }
 
+float LinhaiSearchEngineV3::predict_gbdt(
+    const V3GBDTModel& model,
+    const std::unordered_map<std::string, float>& features
+) const {
+    if (!model.loaded) {
+        return 0.0f;
+    }
+    // A-2b: materialize the feature vector once using the name->value map,
+    // so subsequent tree walks are O(depth) pointer chases instead of O(n)
+    // hashmap lookups. Missing features default to 0.0f, which matches the
+    // training-time behavior (LightGBM sees 0 where features weren't set).
+    const std::size_t feat_count = model.feature_names.size();
+    std::vector<float> x(feat_count, 0.0f);
+    for (std::size_t i = 0; i < feat_count; i++) {
+        const auto it = features.find(model.feature_names[i]);
+        if (it != features.end()) {
+            x[i] = it->second;
+        }
+    }
+
+    float raw = model.init_score;
+    for (const auto& tree : model.trees) {
+        if (tree.empty()) {
+            continue;
+        }
+        int idx = 0;
+        // Bound the walk by tree.size() as an extra safety net; the JSON
+        // validator already rejected invalid indices at load time.
+        int guard = static_cast<int>(tree.size()) + 2;
+        while (guard-- > 0 && tree[idx].feat >= 0) {
+            const V3GBDTNode& node = tree[idx];
+            const int feat = node.feat;
+            const float value = feat < static_cast<int>(feat_count) ? x[feat] : 0.0f;
+            idx = value <= node.thr ? node.left : node.right;
+            if (idx < 0 || idx >= static_cast<int>(tree.size())) {
+                break;
+            }
+        }
+        if (idx >= 0 && idx < static_cast<int>(tree.size())) {
+            raw += tree[idx].leaf_value;
+        }
+    }
+    return model.logistic ? clamp01(1.0f / (1.0f + std::exp(-raw))) : raw;
+}
+
+float LinhaiSearchEngineV3::predict_head(
+    const V3LinearModel& linear,
+    const V3GBDTModel& gbdt,
+    const std::unordered_map<std::string, float>& features
+) const {
+    // A-2b: GBDT wins when both are loaded; this is the same precedence
+    // tools/train_model_stub.py uses offline, so train/infer stay aligned.
+    if (gbdt.loaded) {
+        return predict_gbdt(gbdt, features);
+    }
+    if (linear.loaded) {
+        return predict_model(linear, features);
+    }
+    return 0.0f;
+}
+
+// A-2b: all six estimate_* heads now delegate to predict_head(), which
+// prefers the GBDT model when available and falls through to the linear
+// model otherwise. When neither is loaded we return the heuristic directly
+// (this is the path stale params directories take).
+
 float LinhaiSearchEngineV3::estimate_agari_prob(
     const CanonicalGameState& state,
     const SearchCandidate& candidate,
@@ -558,14 +813,13 @@ float LinhaiSearchEngineV3::estimate_agari_prob(
     int target_hai,
     bool safe
 ) const {
-    if (!agari_model_.loaded) {
+    if (!agari_model_.loaded && !agari_gbdt_.loaded) {
         return clamp01(heuristic_agari_prob);
     }
     auto features = build_state_features(state);
     add_candidate_features(features, candidate, action, target_hai, safe);
     features["heuristic_agari_prob"] = clamp01(heuristic_agari_prob);
-    const float model_prob = predict_model(agari_model_, features);
-    return clamp01(model_prob);
+    return clamp01(predict_head(agari_model_, agari_gbdt_, features));
 }
 
 float LinhaiSearchEngineV3::estimate_houjuu_prob(
@@ -576,14 +830,13 @@ float LinhaiSearchEngineV3::estimate_houjuu_prob(
     int target_hai,
     bool safe
 ) const {
-    if (!houjuu_model_.loaded) {
+    if (!houjuu_model_.loaded && !houjuu_gbdt_.loaded) {
         return clamp01(heuristic_houjuu_prob);
     }
     auto features = build_state_features(state);
     add_candidate_features(features, candidate, action, target_hai, safe);
     features["heuristic_houjuu_prob"] = clamp01(heuristic_houjuu_prob);
-    const float model_prob = predict_model(houjuu_model_, features);
-    return clamp01(model_prob);
+    return clamp01(predict_head(houjuu_model_, houjuu_gbdt_, features));
 }
 
 float LinhaiSearchEngineV3::estimate_tenpai_prob(
@@ -594,14 +847,13 @@ float LinhaiSearchEngineV3::estimate_tenpai_prob(
     int target_hai,
     bool safe
 ) const {
-    if (!tenpai_model_.loaded) {
+    if (!tenpai_model_.loaded && !tenpai_gbdt_.loaded) {
         return clamp01(heuristic_tenpai_prob);
     }
     auto features = build_state_features(state);
     add_candidate_features(features, candidate, action, target_hai, safe);
     features["heuristic_tenpai_prob"] = clamp01(heuristic_tenpai_prob);
-    const float model_prob = predict_model(tenpai_model_, features);
-    return clamp01(model_prob);
+    return clamp01(predict_head(tenpai_model_, tenpai_gbdt_, features));
 }
 
 float LinhaiSearchEngineV3::estimate_betaori_prob(
@@ -612,14 +864,13 @@ float LinhaiSearchEngineV3::estimate_betaori_prob(
     int target_hai,
     bool safe
 ) const {
-    if (!betaori_model_.loaded) {
+    if (!betaori_model_.loaded && !betaori_gbdt_.loaded) {
         return clamp01(heuristic_betaori_prob);
     }
     auto features = build_state_features(state);
     add_candidate_features(features, candidate, action, target_hai, safe);
     features["heuristic_betaori_prob"] = clamp01(heuristic_betaori_prob);
-    const float model_prob = predict_model(betaori_model_, features);
-    return clamp01(model_prob);
+    return clamp01(predict_head(betaori_model_, betaori_gbdt_, features));
 }
 
 float LinhaiSearchEngineV3::estimate_tsumo_num(
@@ -630,13 +881,13 @@ float LinhaiSearchEngineV3::estimate_tsumo_num(
     int target_hai,
     bool safe
 ) const {
-    if (!tsumo_num_model_.loaded) {
+    if (!tsumo_num_model_.loaded && !tsumo_num_gbdt_.loaded) {
         return std::max(0.0f, heuristic_tsumo_num);
     }
     auto features = build_state_features(state);
     add_candidate_features(features, candidate, action, target_hai, safe);
     features["heuristic_tsumo_num"] = std::max(0.0f, heuristic_tsumo_num);
-    return std::max(0.0f, predict_model(tsumo_num_model_, features));
+    return std::max(0.0f, predict_head(tsumo_num_model_, tsumo_num_gbdt_, features));
 }
 
 float LinhaiSearchEngineV3::estimate_ryukyoku_prob(
@@ -647,14 +898,13 @@ float LinhaiSearchEngineV3::estimate_ryukyoku_prob(
     int target_hai,
     bool safe
 ) const {
-    if (!ryukyoku_model_.loaded) {
+    if (!ryukyoku_model_.loaded && !ryukyoku_gbdt_.loaded) {
         return clamp01(heuristic_ryukyoku_prob);
     }
     auto features = build_state_features(state);
     add_candidate_features(features, candidate, action, target_hai, safe);
     features["heuristic_ryukyoku_prob"] = clamp01(heuristic_ryukyoku_prob);
-    const float model_prob = predict_model(ryukyoku_model_, features);
-    return clamp01(model_prob);
+    return clamp01(predict_head(ryukyoku_model_, ryukyoku_gbdt_, features));
 }
 
 SearchResult LinhaiSearchEngineV3::make_fallback_result(const std::string& reason) const {
@@ -687,6 +937,21 @@ int LinhaiSearchEngineV3::cached_shanten(const Hai_Array& tehai) {
     return shanten;
 }
 
+int LinhaiSearchEngineV3::cached_shanten(const Hai_Array& tehai, const Fuuro_Vector& fuuro) {
+    if (fuuro.empty()) {
+        return cached_shanten(tehai);
+    }
+    // Merge fuuro tiles back into a virtual 13/14-tile hand, then reuse the
+    // hashed cache. We can't naively subtract `2 * fuuro_count` from the raw
+    // shanten because standard decomposition on e.g. a 10-tile post-chi hand
+    // can still produce pairless configurations (2 melds + 2 tatsu + no pair)
+    // that the `-2*fuuro` adjustment would falsely rank as tenpai — observed
+    // in real chi→discard evaluations where check_win returned 0 waits even
+    // though the adjusted shanten was 0.
+    const Hai_Array merged = using_hai_array(tehai, fuuro);
+    return cached_shanten(merged);
+}
+
 void LinhaiSearchEngineV3::apply_context(CanonicalGameState& state) {
     state.refresh_counts();
     fallback_engine_.set_opponent_discards(state.opponent_discards);
@@ -709,7 +974,10 @@ std::vector<SearchCandidate> LinhaiSearchEngineV3::build_discard_candidates(cons
         // estimate. The fast estimator could be off by multiple shanten in
         // real hands, which systematically biases every downstream EV term
         // (total_ev, tenpai_prob, tsumo_num, ...).
-        int shanten_after = cached_shanten(after);
+        // Bug fix: include fuuro so post-chi/post-pon states evaluate shanten
+        // on the full 13-tile representation. Without this, the engine
+        // systematically underestimated chi tenpai paths.
+        int shanten_after = cached_shanten(after, game_state.fuuro);
         int ukeire = estimate_ukeire_after_discard(after, remaining);
         bool safe = is_safe_against_discards(state.opponent_discards, hai);
         int support = tile_connectivity(game_state.tehai, hai);
@@ -767,7 +1035,17 @@ std::vector<SearchCandidate> LinhaiSearchEngineV3::build_discard_candidates(cons
             (state.game_state.wall_remaining <= 18 ? 0.15f : 0.0f) -
             static_cast<float>(ukeire) * 0.0018f
         );
+        const float heuristic_agari_prob = clamp01(
+            shanten_after <= 0
+                ? 0.55f + static_cast<float>(ukeire) * 0.005f
+                : (shanten_after == 1
+                       ? 0.18f + static_cast<float>(ukeire) * 0.004f
+                       : (shanten_after == 2
+                              ? 0.05f + static_cast<float>(ukeire) * 0.0015f
+                              : 0.015f + static_cast<float>(ukeire) * 0.0005f))
+        );
         c.houjuu_prob = estimate_houjuu_prob(state, c, heuristic_houjuu_prob, c.action, 0, safe);
+        c.agari_prob = estimate_agari_prob(state, c, heuristic_agari_prob, c.action, 0, safe);
         c.total_ev = static_cast<float>(-shanten_after * 1200 + ukeire * 12 - support * 45);
         c.total_ev += white_synergy_bonus + tree_white_bonus;
         c.total_ev -= grab_charge_penalty + contract_penalty + opponent_pressure_penalty;
@@ -783,9 +1061,26 @@ std::vector<SearchCandidate> LinhaiSearchEngineV3::build_discard_candidates(cons
         c.ryukyoku_prob = estimate_ryukyoku_prob(state, c, heuristic_ryukyoku_prob, c.action, 0, safe);
         c.defense_score = -(c.houjuu_prob * 8000.0f + contract_penalty + opponent_pressure_penalty) + c.betaori_prob * 900.0f;
         c.total_ev += c.tenpai_prob * 850.0f;
-        c.total_ev += c.betaori_prob * (safe ? 160.0f : 40.0f);
+        // C-3: betaori_unsafe 40→150 (safe 160→350). 旧配比 40 在 houjuu
+        // 高的局面几乎无效（betaori=0.3 时只贡献 12），提升后能让搜索在
+        // 多面听威胁下更主动选取 betaori 高的弃牌。
+        c.total_ev += c.betaori_prob * (safe ? 350.0f : 150.0f);
         c.total_ev -= c.ryukyoku_prob * 320.0f;
         c.total_ev -= c.tsumo_num * 18.0f;
+        // A-2c-final: previously houjuu_prob was computed but never affected
+        // total_ev (only the unused defense_score field). This explained why
+        // ROI #3's improved houjuu predictions never moved win rate -- the
+        // search literally ignored them.
+        // C-3: 4000→5500，进一步强化防御。baseline 0.693 winrate 下
+        // self_houjuu=0.135 vs opp=0.287，还有下压空间。
+        c.total_ev -= c.houjuu_prob * 5500.0f;
+        // C-2: agari_prob was only weighted at root, so inner look-ahead
+        // candidates ignored winning-chance entirely. Pull it into
+        // build_discard_candidates so recursive draw simulation sees the
+        // attack signal. Root retains its own +agari*2800 against the
+        // post-discard state, so inner uses a damped 1800 to avoid
+        // over-stacking (root effective weight ~ 1800*0.45 + 2800).
+        c.total_ev += c.agari_prob * 1800.0f;
         c.explanation = std::to_string(shanten_after) + "向听, 受入" + std::to_string(ukeire);
         if (white_synergy_bonus > 0.0f) {
             c.explanation += ", 保留白板联动";
@@ -948,6 +1243,29 @@ SearchResult LinhaiSearchEngineV3::search_discard_once(CanonicalGameState& state
         const float heuristic_agari_prob = clamp01(0.02f * static_cast<float>(candidate.ukeire));
         candidate.agari_prob = estimate_agari_prob(next, candidate, heuristic_agari_prob, candidate.action, 0, false);
         candidate.total_ev += candidate.agari_prob * 2800.0f;
+        // C-4 (lone non-yakuhai honor preference): the engine's pure EV math
+        // treats a lone non-yakuhai honor (e.g. South for an East player) as
+        // roughly equivalent to other terminal floats like 9m. In real play
+        // — and in any seasoned engine (Mortal/Suphx/Tenhou) — a lone honor
+        // that doesn't combine with anything and gives no yaku is the
+        // textbook first discard: zero structural cost, near-zero deal-in
+        // risk early, minimum information leak. Without this nudge the
+        // engine has been systematically picking number-tile floats over
+        // lone non-grab-charge honors when EVs are within ~30. We apply the
+        // bonus ONLY at the root (not in build_discard_candidates) — adding
+        // it inside the recursion would let "discard 9m now → discard south
+        // with +60 next turn" outscore "discard south now with +60", which
+        // backfires on the original case. Root-only application correctly
+        // breaks ties between equivalent floats without leaking into
+        // future_ev rollouts.
+        const int pre_count = state.game_state.tehai[candidate.hai];
+        const bool is_honor = (candidate.hai >= 31 && candidate.hai <= 37);
+        const bool is_wildcard = (candidate.hai == 35);
+        if (pre_count == 1 && is_honor && !is_wildcard
+                && !is_grab_charge_tile(candidate.hai, state.game_state.jikaze)) {
+            candidate.total_ev += 60.0f;
+            candidate.explanation += ", 弃孤张非役字牌";
+        }
         root_candidates_evaluated += 1;
     }
 
@@ -987,7 +1305,8 @@ std::vector<SearchCandidate> LinhaiSearchEngineV3::build_response_candidates(con
     std::vector<SearchCandidate> candidates;
     const Hai_Array& tehai = state.game_state.tehai;
     // A-1: use exact shanten so response-mode depth picking is correct.
-    int current_shanten = cached_shanten(tehai);
+    // Include fuuro so depth choice is correct when the hand already has melds.
+    int current_shanten = cached_shanten(tehai, state.game_state.fuuro);
     int response_depth = choose_draw_depth(config_, current_shanten);
 
     auto append_followup_discard = [&](
@@ -1180,7 +1499,7 @@ std::vector<SearchCandidate> LinhaiSearchEngineV3::build_response_candidates(con
         c.total_ev += (c.betaori_prob - weighted_betaori_prob) * 250.0f;
         c.total_ev -= (c.tsumo_num - weighted_tsumo_num) * 10.0f;
         c.total_ev -= (c.ryukyoku_prob - weighted_ryukyoku_prob) * 180.0f;
-        c.shanten = cached_shanten(next_state.game_state.tehai);
+        c.shanten = cached_shanten(next_state.game_state.tehai, next_state.game_state.fuuro);
         c.search_depth = response_depth + 1;
         c.explanation = explanation_prefix;
         if (best_discard > 0) {
@@ -1296,7 +1615,7 @@ SearchResult LinhaiSearchEngineV3::recommend_discard_v3(CanonicalGameState state
     reset_search_cache();
     begin_search_budget(config_.time_budget_ms_discard, config_.max_nodes_discard);
     apply_context(state);
-    int shanten = calc_linhai_shanten(state.game_state.tehai);
+    int shanten = cached_shanten(state.game_state.tehai, state.game_state.fuuro);
     int depth = choose_draw_depth(config_, shanten);
 
     if (!model_bundle_.loaded) {
