@@ -1,0 +1,24 @@
+{
+  "task": "agari_score",
+  "created_at": "2026-04-29T14:42:36.083615+00:00",
+  "status": "trained",
+  "label_key": "task_labels.score_label",
+  "dataset": {
+    "dataset_path": "data/iter_samples/R1.jsonl",
+    "total_records": 203632,
+    "records_with_task_labels": 203632,
+    "label_key_counts": {
+      "best_discard_tile": 203632,
+      "can_win_label": 203632,
+      "score_label": 203632
+    }
+  },
+  "trained_examples": 203632,
+  "skipped_records": 0,
+  "model_file": "data/iter_params/R1/v3/agari_score/model.json",
+  "model_type": "linear_regression",
+  "metrics": {
+    "train_r2": 0.1730211769599319,
+    "val_r2": 0.17444834026369505
+  }
+}

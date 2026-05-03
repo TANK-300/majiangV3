@@ -1,0 +1,31 @@
+{
+  "passed": false,
+  "winrate": 0.585,
+  "houjuu_rate": 0.195,
+  "thresholds": {
+    "min_winrate": 0.7,
+    "max_houjuu_rate": 0.12
+  },
+  "stats": {
+    "policy_a": "reference_human",
+    "policy_b": "heuristic",
+    "games_played": 200,
+    "draws": 0,
+    "wins_a": 117,
+    "wins_b": 83,
+    "winrate_a": 0.585,
+    "winrate_b": 0.415,
+    "draw_rate": 0.0,
+    "tsumo_a": 63,
+    "tsumo_b": 44,
+    "ron_a": 54,
+    "ron_b": 39,
+    "houjuu_rate_a": 0.195,
+    "houjuu_rate_b": 0.27,
+    "avg_turns": 24.71,
+    "median_turns": 24.0
+  },
+  "avg_chong_per_game": 1.735,
+  "games": 200,
+  "seed": 1
+}

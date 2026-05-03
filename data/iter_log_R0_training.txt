@@ -1,0 +1,40 @@
+=== Training agari_prob ===
+{"created": "data/iter_params/R0/v3/agari_prob/model_meta.json", "model": "data/iter_params/R0/v3/agari_prob/model.json", "status": "trained"}
+python3 tools/train_model_stub.py --task $head --version-dir  --dataset   0.2  141.05s user 9.43s system 99% cpu 2:31.97 total
+grep --color=auto --exclude-dir={.bzr,CVS,.git,.hg,.svn,.idea,.tox,.venv,venv  0.00s user 0.00s system 0% cpu 2:31.97 total
+tail -3  0.00s user 0.00s system 0% cpu 2:31.97 total
+=== Training tenpai_prob ===
+{"created": "data/iter_params/R0/v3/tenpai_prob/model_meta.json", "model": "data/iter_params/R0/v3/tenpai_prob/model.json", "status": "trained"}
+python3 tools/train_model_stub.py --task $head --version-dir  --dataset   0.2  141.08s user 6.88s system 99% cpu 2:28.63 total
+grep --color=auto --exclude-dir={.bzr,CVS,.git,.hg,.svn,.idea,.tox,.venv,venv  0.00s user 0.00s system 0% cpu 2:28.63 total
+tail -3  0.00s user 0.00s system 0% cpu 2:28.63 total
+=== Training houjuu_prob ===
+{"created": "data/iter_params/R0/v3/houjuu_prob/model_meta.json", "model": "data/iter_params/R0/v3/houjuu_prob/model.json", "status": "trained"}
+python3 tools/train_model_stub.py --task $head --version-dir  --dataset   0.2  142.47s user 6.49s system 99% cpu 2:29.10 total
+grep --color=auto --exclude-dir={.bzr,CVS,.git,.hg,.svn,.idea,.tox,.venv,venv  0.00s user 0.00s system 0% cpu 2:29.10 total
+tail -3  0.00s user 0.00s system 0% cpu 2:29.10 total
+=== Training betaori ===
+{"created": "data/iter_params/R0/v3/betaori/model_meta.json", "model": "data/iter_params/R0/v3/betaori/model.json", "status": "trained"}
+python3 tools/train_model_stub.py --task $head --version-dir  --dataset   0.2  141.96s user 7.60s system 99% cpu 2:30.02 total
+grep --color=auto --exclude-dir={.bzr,CVS,.git,.hg,.svn,.idea,.tox,.venv,venv  0.00s user 0.00s system 0% cpu 2:30.02 total
+tail -3  0.00s user 0.00s system 0% cpu 2:30.02 total
+=== Training tsumo_num ===
+{"created": "data/iter_params/R0/v3/tsumo_num/model_meta.json", "model": "data/iter_params/R0/v3/tsumo_num/model.json", "status": "trained"}
+python3 tools/train_model_stub.py --task $head --version-dir  --dataset   0.2  149.20s user 5.79s system 99% cpu 2:35.57 total
+grep --color=auto --exclude-dir={.bzr,CVS,.git,.hg,.svn,.idea,.tox,.venv,venv  0.00s user 0.00s system 0% cpu 2:35.57 total
+tail -3  0.00s user 0.00s system 0% cpu 2:35.57 total
+=== Training ryukyoku_prob ===
+{"created": "data/iter_params/R0/v3/ryukyoku_prob/model_meta.json", "model": "data/iter_params/R0/v3/ryukyoku_prob/model.json", "status": "trained"}
+python3 tools/train_model_stub.py --task $head --version-dir  --dataset   0.2  140.64s user 6.79s system 99% cpu 2:28.18 total
+grep --color=auto --exclude-dir={.bzr,CVS,.git,.hg,.svn,.idea,.tox,.venv,venv  0.00s user 0.00s system 0% cpu 2:28.18 total
+tail -3  0.00s user 0.00s system 0% cpu 2:28.18 total
+=== Training agari_score ===
+{"created": "data/iter_params/R0/v3/agari_score/model_meta.json", "model": "data/iter_params/R0/v3/agari_score/model.json", "status": "trained"}
+python3 tools/train_model_stub.py --task $head --version-dir  --dataset   0.2  140.59s user 6.40s system 99% cpu 2:27.84 total
+grep --color=auto --exclude-dir={.bzr,CVS,.git,.hg,.svn,.idea,.tox,.venv,venv  0.00s user 0.00s system 0% cpu 2:27.84 total
+tail -3  0.00s user 0.00s system 0% cpu 2:27.84 total
+=== Training houjuu_score ===
+{"created": "data/iter_params/R0/v3/houjuu_score/model_meta.json", "model": "data/iter_params/R0/v3/houjuu_score/model.json", "status": "trained"}
+python3 tools/train_model_stub.py --task $head --version-dir  --dataset   0.2  140.02s user 5.32s system 99% cpu 2:25.92 total
+grep --color=auto --exclude-dir={.bzr,CVS,.git,.hg,.svn,.idea,.tox,.venv,venv  0.00s user 0.00s system 0% cpu 2:25.92 total
+tail -3  0.00s user 0.00s system 0% cpu 2:25.92 total

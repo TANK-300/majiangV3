@@ -1,0 +1,26 @@
+[
+  {
+    "name": "R1",
+    "started_at": "2026-04-29T14:10:38.803351+00:00",
+    "elapsed_s": 1978.6,
+    "sample_file": "data/iter_samples/R1.jsonl",
+    "bundle_dir": "data/iter_params/R1",
+    "passed": true
+  },
+  {
+    "name": "R2",
+    "started_at": "2026-04-29T14:43:37.428613+00:00",
+    "elapsed_s": 6058.7,
+    "sample_file": "data/iter_samples/R2.jsonl",
+    "bundle_dir": "data/iter_params/R2",
+    "passed": true
+  },
+  {
+    "name": "R3",
+    "passed": false,
+    "report_path": "data/iter_params/acceptance_R3.json",
+    "rc": 1,
+    "started_at": "2026-04-29T16:24:36.142355+00:00",
+    "elapsed_s": 144.7
+  }
+]

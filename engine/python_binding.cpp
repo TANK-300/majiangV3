@@ -340,6 +340,9 @@ PYBIND11_MODULE(linhai_v3, m) {
         .def_readwrite("contract_counter", &linhai::CanonicalGameState::contract_counter)
         .def_readwrite("opponent_meld_count", &linhai::CanonicalGameState::opponent_meld_count)
         .def_readwrite("opponent_discard_count", &linhai::CanonicalGameState::opponent_discard_count)
+        // Phase A §3.5.3: 副露压力辅助字段（compute_opp_pressure_score 内部使用）
+        .def_readwrite("opponent_honor_triplets", &linhai::CanonicalGameState::opponent_honor_triplets)
+        .def_readwrite("opp_white_meld_count", &linhai::CanonicalGameState::opp_white_meld_count)
         .def("refresh_counts", &linhai::CanonicalGameState::refresh_counts)
         .def("set_hand", [](linhai::CanonicalGameState& self, const std::vector<std::string>& hand) {
             self.game_state.tehai = hand_list_to_array(hand);
@@ -355,7 +358,9 @@ PYBIND11_MODULE(linhai_v3, m) {
         .def("get_model_bundle", &linhai::LinhaiSearchEngineV3::get_model_bundle)
         .def("get_last_search_debug", &linhai::LinhaiSearchEngineV3::get_last_search_debug)
         .def("recommend_discard_v3", &linhai::LinhaiSearchEngineV3::recommend_discard_v3)
-        .def("recommend_response_v3", &linhai::LinhaiSearchEngineV3::recommend_response_v3);
+        .def("recommend_response_v3", &linhai::LinhaiSearchEngineV3::recommend_response_v3)
+        // Phase A §3.5.3: 副露压力综合标量（A4 将动态加权 EV 风险项）
+        .def("compute_opp_pressure_score", &linhai::LinhaiSearchEngineV3::compute_opp_pressure_score);
 
     // ========================================
     // 辅助函数

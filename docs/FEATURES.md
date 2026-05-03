@@ -34,11 +34,30 @@ V3 的模型走"Python 训练 + C++ 推理"两端。特征名**必须完全一�
 
 这一层提供了"具体到哪张牌"的信息，原先只有聚合量（`pair_count`、`honor_count` 等）。在不修 C++ 预测器的前提下，这些特征直接进入 `V3LinearModel` 的线性打分里。
 
-## 已知仍欠缺（留给 A-2b / B 期）
+## 已知仍欠缺（留给后续期）
 
 - 精确向听数和受入分布 per-tile（目前 C++ 侧已算 cached_shanten，但没作为特征暴露给模型）
-- 筋/壁/现物（需要对每张牌做规则判定）
 - 副露类型（peng/chi/gang/anka）one-hot
+
+## A-3 / 验收：safety per-tile 防守特征族
+
+按 `docs/superpowers/specs/2026-04-28-linhai-v3-acceptance-design.md` §4.4 实现。
+
+| 前缀 | 含义 | 启发 |
+|---|---|---|
+| `safety_t_X` | X 是否在对手河（现物） | A-2c-3 已有，spec §4.4 沿用 |
+| `safety_suji_t_X` | X 被筋（4 出过 → 1/7 安全；5 → 2/8；6 → 3/9） | spec §4.4 新增 |
+| `safety_kabe_t_X` | X 邻牌可见 ≥3（壁） | spec §4.4 新增 |
+
+**双侧实现**（必须严格同步，否则 head 静默失效）：
+- 训练侧：`tools/extract_canonical_states.py::build_model_features`
+- 推理侧：`engine/share/linhai_search_v3.cpp::build_state_features`
+- 一致性测试：`tests/python/test_feature_parity.py`（13 用例，CI 必须过）
+
+**特征行为**：
+- `safety_t_X`：X 在对手河里出现至少 1 次 → 1.0；否则 0.0
+- `safety_suji_t_X`：仅对万 / 条数牌生效，字牌恒 0
+- `safety_kabe_t_X`：仅对万 / 条数牌生效，字牌恒 0；可见量 = 4 - remaining_count
 
 ## A-2b：GBDT (LightGBM) 模型 schema
 

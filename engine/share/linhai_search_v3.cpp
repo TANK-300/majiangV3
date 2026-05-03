@@ -278,6 +278,11 @@ bool LinhaiSearchEngineV3::load_model_bundle(const std::string& version_dir) {
     betaori_gbdt_ = V3GBDTModel();
     tsumo_num_gbdt_ = V3GBDTModel();
     ryukyoku_gbdt_ = V3GBDTModel();
+    // 验收 score heads
+    agari_score_model_ = V3LinearModel();
+    houjuu_score_model_ = V3LinearModel();
+    agari_score_gbdt_ = V3GBDTModel();
+    houjuu_score_gbdt_ = V3GBDTModel();
 
     std::string params_dir = version_dir;
     if (!params_dir.empty() && params_dir.back() != '/') {
@@ -295,6 +300,13 @@ bool LinhaiSearchEngineV3::load_model_bundle(const std::string& version_dir) {
     const bool betaori_loaded = load_v3_head(params_dir + "v3/betaori/model.json", betaori_model_, betaori_gbdt_);
     const bool tsumo_num_loaded = load_v3_head(params_dir + "v3/tsumo_num/model.json", tsumo_num_model_, tsumo_num_gbdt_);
     const bool ryukyoku_loaded = load_v3_head(params_dir + "v3/ryukyoku_prob/model.json", ryukyoku_model_, ryukyoku_gbdt_);
+    // 验收 score heads（可选）：缺失不算错误，回退到 6-prob 路径
+    (void)load_v3_head(params_dir + "v3/agari_score/model.json", agari_score_model_, agari_score_gbdt_);
+    (void)load_v3_head(params_dir + "v3/houjuu_score/model.json", houjuu_score_model_, houjuu_score_gbdt_);
+
+    // Phase A spec §3.5: 加载 v3/score_table.json（含 ev_risk_weights /
+    // betaori_thresholds / feature_weights）。文件缺失 → 默认表（同 spec 默认）。
+    score_table_ = linhai_score::load_score_table(params_dir + "v3/score_table.json");
 
     const int loaded_count =
         static_cast<int>(agari_loaded) +
@@ -690,6 +702,59 @@ std::unordered_map<std::string, float> LinhaiSearchEngineV3::build_state_feature
     const int opp_meld_denom = state.opponent_meld_count > 0 ? state.opponent_meld_count : 1;
     features["opp_disc_per_meld"] = static_cast<float>(opp_disc_total) / static_cast<float>(opp_meld_denom);
 
+    // 验收 (spec §4.4): per-tile suji (筋) + kabe (壁) safety signals.
+    // 必须与 tools/extract_canonical_states.py::build_model_features 同步加。
+    // tests/python/test_feature_parity.py 锁名字一致性。
+    //
+    // 筋 (suji): 对手已弃 4 → 1/7 安全；5 → 2/8；6 → 3/9。两个数色独立计算。
+    // 壁 (kabe): 一张牌可见 ≥ 3 → 相邻数牌安全（不会被对手听）。
+    std::array<bool, 38> suji_safe = {false};
+    std::array<bool, 38> kabe_safe = {false};
+
+    // suji
+    auto check_suji = [&](int suit_base) {
+        // suit_base: 0 for 1w-9w (hai 1..9), 20 for 1t-9t (hai 21..29).
+        // 4 → 1/7
+        if (opp_discard_counts[suit_base + 4] > 0) {
+            suji_safe[suit_base + 1] = true;
+            suji_safe[suit_base + 7] = true;
+        }
+        if (opp_discard_counts[suit_base + 5] > 0) {
+            suji_safe[suit_base + 2] = true;
+            suji_safe[suit_base + 8] = true;
+        }
+        if (opp_discard_counts[suit_base + 6] > 0) {
+            suji_safe[suit_base + 3] = true;
+            suji_safe[suit_base + 9] = true;
+        }
+    };
+    check_suji(0);   // 1m..9m
+    check_suji(20);  // 1t..9t (hai 21..29 means base = 20, 21=base+1)
+
+    // kabe: visible >= 3 → adjacent tiles are safer
+    // visible = total copies (4) - remaining_counts
+    auto check_kabe = [&](int suit_base) {
+        for (int r = 1; r <= 9; ++r) {
+            int hai = suit_base + r;
+            int visible = 4 - state.remaining_counts[hai];
+            if (visible >= 3) {
+                if (r > 1) kabe_safe[suit_base + (r - 1)] = true;
+                if (r < 9) kabe_safe[suit_base + (r + 1)] = true;
+            }
+        }
+    };
+    check_kabe(0);   // 1m..9m
+    check_kabe(20);  // 1t..9t
+
+    for (int hai = 1; hai < 38; ++hai) {
+        const char* code = tile_code_for_feature(hai);
+        if (code == nullptr) continue;
+        features[std::string("safety_suji_t_") + code] =
+            suji_safe[hai] ? 1.0f : 0.0f;
+        features[std::string("safety_kabe_t_") + code] =
+            kabe_safe[hai] ? 1.0f : 0.0f;
+    }
+
     return features;
 }
 
@@ -890,6 +955,38 @@ float LinhaiSearchEngineV3::estimate_tsumo_num(
     return std::max(0.0f, predict_head(tsumo_num_model_, tsumo_num_gbdt_, features));
 }
 
+// 验收 (spec §3.3): score-aware EV head. 返回模型预测的"自家本局期望冲数"
+// 或"自家本局期望失分（负值）"。score head 已加载时调用，否则返回 0。
+float LinhaiSearchEngineV3::estimate_agari_score(
+    const CanonicalGameState& state,
+    const SearchCandidate& candidate,
+    const std::string& action,
+    int target_hai,
+    bool safe
+) const {
+    if (!agari_score_model_.loaded && !agari_score_gbdt_.loaded) {
+        return 0.0f;
+    }
+    auto features = build_state_features(state);
+    add_candidate_features(features, candidate, action, target_hai, safe);
+    return predict_head(agari_score_model_, agari_score_gbdt_, features);
+}
+
+float LinhaiSearchEngineV3::estimate_houjuu_score(
+    const CanonicalGameState& state,
+    const SearchCandidate& candidate,
+    const std::string& action,
+    int target_hai,
+    bool safe
+) const {
+    if (!houjuu_score_model_.loaded && !houjuu_score_gbdt_.loaded) {
+        return 0.0f;
+    }
+    auto features = build_state_features(state);
+    add_candidate_features(features, candidate, action, target_hai, safe);
+    return predict_head(houjuu_score_model_, houjuu_score_gbdt_, features);
+}
+
 float LinhaiSearchEngineV3::estimate_ryukyoku_prob(
     const CanonicalGameState& state,
     const SearchCandidate& candidate,
@@ -963,6 +1060,23 @@ std::vector<SearchCandidate> LinhaiSearchEngineV3::build_discard_candidates(cons
     const GameState& game_state = state.game_state;
     Hai_Array remaining = state.remaining_counts;
     std::set<int> seen;
+    // === Phase A spec §3.5.1: 风险厌恶 EV 重加权 ===
+    // 关键：opp_pressure 只与"对手公开信息"有关，与具体打哪张牌无关，所以
+    // 提到候选循环外只算一次。circa 27 候选 × 1 µs = 27 µs 的固定开销，与
+    // perf_regression P95 ≤ 800ms 预算相比可忽略。
+    const float opp_pressure = compute_opp_pressure_score(state);
+    const auto& evr = score_table_.ev_risk_weights;
+    const float dynamic_lambda = std::min(
+        evr.lambda_max,
+        evr.lambda_base + evr.lambda_pressure_step * opp_pressure
+    );
+    const float dynamic_mu = std::min(
+        evr.mu_max,
+        evr.mu_base + evr.mu_pressure_step * opp_pressure
+    );
+    // Phase A spec §3.5.3: 防守特征对 EV 的线性修正系数（对所有候选共用）
+    const float opp_pressure_feature_penalty =
+        score_table_.feature_weights.opp_meld_pressure_alpha * opp_pressure * 200.0f;
     for (int hai = 1; hai < 38; hai++) {
         if (game_state.tehai[hai] <= 0 || !is_linhai_valid_tile(hai) || seen.count(hai)) {
             continue;
@@ -1073,7 +1187,19 @@ std::vector<SearchCandidate> LinhaiSearchEngineV3::build_discard_candidates(cons
         // search literally ignored them.
         // C-3: 4000→5500，进一步强化防御。baseline 0.693 winrate 下
         // self_houjuu=0.135 vs opp=0.287，还有下压空间。
-        c.total_ev -= c.houjuu_prob * 5500.0f;
+        // === Phase A spec §3.5.1: 动态 λ + μ 风险加权 ===
+        // λ 项：5500 系数读自 score_table.ev_risk_weights.houjuu_base_coeff，
+        // 基础值 1.5（spec 默认），随 opp_pressure_score 线性放大到 lambda_max。
+        const float houjuu_loss_base = c.houjuu_prob * evr.houjuu_base_coeff;
+        c.total_ev -= dynamic_lambda * houjuu_loss_base;
+        // μ 项：当对手压力高（opp_pressure > 0.3）且模型 score head 已加载时，
+        // 对"对手 ≥4 冲"长尾胡牌路径额外惩罚。high_chong_loss 是预测放炮失分
+        // 超过 high_chong_threshold（默认 4 冲）的部分。
+        if (opp_pressure > 0.3f && has_score_heads_loaded()) {
+            const float houjuu_score_ev = estimate_houjuu_score(state, c, c.action, 0, safe);
+            const float high_chong_loss = std::max(0.0f, std::abs(houjuu_score_ev) - evr.high_chong_threshold);
+            c.total_ev -= dynamic_mu * high_chong_loss * 200.0f;
+        }
         // C-2: agari_prob was only weighted at root, so inner look-ahead
         // candidates ignored winning-chance entirely. Pull it into
         // build_discard_candidates so recursive draw simulation sees the
@@ -1081,6 +1207,25 @@ std::vector<SearchCandidate> LinhaiSearchEngineV3::build_discard_candidates(cons
         // post-discard state, so inner uses a damped 1800 to avoid
         // over-stacking (root effective weight ~ 1800*0.45 + 2800).
         c.total_ev += c.agari_prob * 1800.0f;
+        // 验收 (spec §3.3): score-aware EV. 当 agari_score / houjuu_score
+        // head 加载成功时，叠加"模型预测的期望冲数"。1 冲 = 1 分（spec T6
+        // 默认），冲数尺度与 prob×经验冲数 相比小一个量级，所以这里乘 800
+        // 把 score 信号拉到与 agari_prob*1800 / houjuu_prob*5500 同一量级。
+        // 训练后 R3 模型会把 hunyise/qingyise/抢杠胡 等真实番数信号反映出来。
+        if (has_score_heads_loaded()) {
+            const float agari_score_ev = estimate_agari_score(state, c, c.action, 0, safe);
+            const float houjuu_score_ev = estimate_houjuu_score(state, c, c.action, 0, safe);
+            // agari_score 是带号期望（胡牌时正、不胡时小）；houjuu_score 是
+            // 带号期望（放炮时负、不放炮时小）。score 表示"一冲"，乘 800
+            // 把单位拉到与原 EV 一致。
+            c.total_ev += agari_score_ev * 800.0f;
+            c.total_ev -= houjuu_score_ev * 800.0f;
+        }
+        // === Phase A spec §3.5.3: 防守特征对 EV 的线性修正 ===
+        // 对所有候选共用同一个惩罚（opp_pressure 与具体打哪张牌无关），
+        // 因此本质上是对全候选 total_ev 的统一偏移，不改变排序；
+        // 但保留以便 acceptance_25_8 度量与 score_aware EV 累加一致。
+        c.total_ev -= opp_pressure_feature_penalty;
         c.explanation = std::to_string(shanten_after) + "向听, 受入" + std::to_string(ukeire);
         if (white_synergy_bonus > 0.0f) {
             c.explanation += ", 保留白板联动";
@@ -1092,6 +1237,39 @@ std::vector<SearchCandidate> LinhaiSearchEngineV3::build_discard_candidates(cons
             c.explanation += ", 承包风险";
         }
         candidates.push_back(c);
+    }
+    // === Phase A spec §3.5.2: 硬 betaori 门 ===
+    // 危险局面（所有候选 houjuu_prob 都超过动态阈值）下，强制把 EV 重排为
+    // "houjuu_prob 越低 EV 越高"，即"宁可输 shanten 也保命"。这与 A4 的
+    // 软性 λ/μ 加权互补——A4 调小排序差异，A5 在极端情况硬翻盘排序。
+    // opp_pressure 已在循环外计算（line 1067 附近 hoisted），此处复用。
+    if (!candidates.empty()) {
+        const auto& bt = score_table_.betaori_thresholds;
+        // 实时阈值：基础值 -（副露压力下调）-（清一色压力下调）
+        float betaori_threshold = bt.base;
+        const bool has_meld_pressure = state.opponent_meld_count >= 1;
+        const bool has_qingyise_signal = opp_pressure > 0.5f;
+        if (has_meld_pressure) betaori_threshold -= bt.meld_drop;
+        if (has_qingyise_signal) betaori_threshold -= bt.qingyise_drop;
+
+        // 最低 houjuu_prob：若全候选都不安全，门触发
+        float min_houjuu = 1.0f;
+        for (const auto& c : candidates) {
+            if (c.houjuu_prob < min_houjuu) min_houjuu = c.houjuu_prob;
+        }
+        const bool force_betaori_mode =
+            (min_houjuu > betaori_threshold) ||
+            (min_houjuu > betaori_threshold * 0.5f && has_qingyise_signal);
+
+        if (force_betaori_mode) {
+            // 用 ev_loss_multiplier 放大原 houjuu 惩罚（基础 8000，是常规 5500
+            // 的 1.45×；再乘 1.5 默认 multiplier，总效果 ~12000，足以压倒
+            // shanten*1200 等正向 EV 项），把 ranking 强制翻为低 houjuu 优先。
+            for (auto& c : candidates) {
+                c.total_ev -= c.houjuu_prob * 8000.0f * bt.ev_loss_multiplier;
+                c.explanation += "[强制 betaori]";
+            }
+        }
     }
     std::sort(candidates.begin(), candidates.end(), [](const SearchCandidate& a, const SearchCandidate& b) {
         return a.total_ev > b.total_ev;
@@ -1703,6 +1881,66 @@ SearchResult LinhaiSearchEngineV3::recommend_response_v3(CanonicalGameState stat
     result.candidate_scores = candidates;
     last_search_ = result;
     return result;
+}
+
+// Phase A spec §3.5.3: 副露压力综合标量。
+// 取值范围 [0, ~1.5]：0=对手无副露/无威胁；~1.5=对手副露 ≥3 + 同色集中 ≥9 张
+// + 字牌刻子可见 + 抓冲两次 + 副露含白板，全部叠满（极端罕见）。
+//
+// Phase A 仅暴露此 helper，A4 任务会在 EV 公式里通过它动态加权 λ/μ；本任务无外部
+// 行为变化，验证仅靠 compile-clean + 现有 pytest 不回归。
+//
+// 字段来源：
+//   - state.opponent_meld_count        : Python _build_canonical_state 已填
+//   - state.opponent_discards          : 对手实际弃牌（38-array hai code 列表）
+//   - state.opponent_honor_triplets    : Phase A 新增，Python 据 meld.tiles 填
+//   - state.grab_charge_hits           : 已存在；spec 中 grab_charge_caught_count
+//                                         在 CanonicalGameState 上对应字段就是它
+//   - state.opp_white_meld_count       : Phase A 新增，Python 据 meld.tiles 填
+float LinhaiSearchEngineV3::compute_opp_pressure_score(const CanonicalGameState& state) const {
+    auto local_clamp01 = [](float x) { return std::max(0.0f, std::min(1.0f, x)); };
+
+    // 1) 副露姿态：副露数 / 3 → [0, 1]
+    const float meld_term =
+        0.30f * local_clamp01(static_cast<float>(state.opponent_meld_count) / 3.0f);
+
+    // 2) 清一色警报：在对手已经"暴露"的牌里（弃牌 + 副露代表牌）按花色聚合，
+    //    取最大数。≥6 张时开始累加，9 张时拉满。
+    //    临海花色：万 (1..9) / 索 (21..29) / 字 (31..37)。无筒子。
+    int suit_counts[3] = {0, 0, 0};
+    for (int hai : state.opponent_discards) {
+        if (hai >= 1 && hai <= 9) {
+            suit_counts[0] += 1;
+        } else if (hai >= 21 && hai <= 29) {
+            suit_counts[1] += 1;
+        } else if (hai >= 31 && hai <= 37) {
+            suit_counts[2] += 1;
+        }
+    }
+    int max_suit = 0;
+    if (suit_counts[0] > max_suit) max_suit = suit_counts[0];
+    if (suit_counts[1] > max_suit) max_suit = suit_counts[1];
+    // 字牌不计入清一色（它由 ziyise_alarm 单独覆盖）
+    const float qingyise_alarm =
+        local_clamp01((static_cast<float>(max_suit) - 5.0f) / 4.0f);
+    const float qingyise_term = 0.25f * qingyise_alarm;
+
+    // 3) 字一色警报：对手字牌刻子数 / 2 → [0, 1]
+    const float ziyise_alarm =
+        local_clamp01(static_cast<float>(state.opponent_honor_triplets) / 2.0f);
+    const float ziyise_term = 0.20f * ziyise_alarm;
+
+    // 4) 抓冲红头威胁：对手已抓冲数 / 2 → [0, 1]
+    //    （CanonicalGameState 字段名为 grab_charge_hits，语义等同于
+    //    spec 中的 grab_charge_caught_count。）
+    const float redhead_term =
+        0.15f * local_clamp01(static_cast<float>(state.grab_charge_hits) / 2.0f);
+
+    // 5) 白板威胁：对手副露含白板（白板=35）→ 1
+    const float white_term =
+        0.10f * local_clamp01(static_cast<float>(state.opp_white_meld_count));
+
+    return meld_term + qingyise_term + ziyise_term + redhead_term + white_term;
 }
 
 } // namespace linhai

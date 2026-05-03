@@ -1,0 +1,442 @@
+
+============================================================
+R1: R1: V3(R0) vs ReferenceHuman, recalibrate houjuu/betaori
+============================================================
+$ LINHAI_V3_PARAMS_DIR=data/iter_params/R0 (loading R0 bundle for R1)
+$ LINHAI_V3_PROFILE=fast /usr/local/bin/python3 tools/selfplay_sample.py --policy-a orchestrator:v3 --policy-b reference_human --games 10000 --seed 1 --output data/iter_samples/R1.jsonl
+{
+  "policy_a": "v3",
+  "policy_b": "reference_human",
+  "games_played": 10000,
+  "steps_recorded": 203632,
+  "output": "data/iter_samples/R1.jsonl",
+  "kinds": {
+    "tsumo": 5648,
+    "ron": 4351,
+    "draw": 1
+  },
+  "elapsed_seconds": 1529.289,
+  "seed": 1
+}
+$ /usr/local/bin/python3 tools/train_model_stub.py --task agari_prob --version-dir data/iter_params/R1 --dataset data/iter_samples/R1.jsonl --validation-split 0.2 --model-kind auto
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:200: RuntimeWarning: divide by zero encountered in matmul
+  raw_prediction = X @ weights + intercept
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:200: RuntimeWarning: overflow encountered in matmul
+  raw_prediction = X @ weights + intercept
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:200: RuntimeWarning: invalid value encountered in matmul
+  raw_prediction = X @ weights + intercept
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:330: RuntimeWarning: divide by zero encountered in matmul
+  grad[:n_features] = X.T @ grad_pointwise + l2_reg_strength * weights
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:330: RuntimeWarning: overflow encountered in matmul
+  grad[:n_features] = X.T @ grad_pointwise + l2_reg_strength * weights
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:330: RuntimeWarning: invalid value encountered in matmul
+  grad[:n_features] = X.T @ grad_pointwise + l2_reg_strength * weights
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+{"created": "data/iter_params/R1/v3/agari_prob/model_meta.json", "model": "data/iter_params/R1/v3/agari_prob/model.json", "status": "trained"}
+$ /usr/local/bin/python3 tools/train_model_stub.py --task tenpai_prob --version-dir data/iter_params/R1 --dataset data/iter_samples/R1.jsonl --validation-split 0.2 --model-kind auto
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:200: RuntimeWarning: divide by zero encountered in matmul
+  raw_prediction = X @ weights + intercept
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:200: RuntimeWarning: overflow encountered in matmul
+  raw_prediction = X @ weights + intercept
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:200: RuntimeWarning: invalid value encountered in matmul
+  raw_prediction = X @ weights + intercept
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:330: RuntimeWarning: divide by zero encountered in matmul
+  grad[:n_features] = X.T @ grad_pointwise + l2_reg_strength * weights
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:330: RuntimeWarning: overflow encountered in matmul
+  grad[:n_features] = X.T @ grad_pointwise + l2_reg_strength * weights
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:330: RuntimeWarning: invalid value encountered in matmul
+  grad[:n_features] = X.T @ grad_pointwise + l2_reg_strength * weights
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+{"created": "data/iter_params/R1/v3/tenpai_prob/model_meta.json", "model": "data/iter_params/R1/v3/tenpai_prob/model.json", "status": "trained"}
+$ /usr/local/bin/python3 tools/train_model_stub.py --task houjuu_prob --version-dir data/iter_params/R1 --dataset data/iter_samples/R1.jsonl --validation-split 0.2 --model-kind auto
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:200: RuntimeWarning: divide by zero encountered in matmul
+  raw_prediction = X @ weights + intercept
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:200: RuntimeWarning: overflow encountered in matmul
+  raw_prediction = X @ weights + intercept
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:200: RuntimeWarning: invalid value encountered in matmul
+  raw_prediction = X @ weights + intercept
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:330: RuntimeWarning: divide by zero encountered in matmul
+  grad[:n_features] = X.T @ grad_pointwise + l2_reg_strength * weights
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:330: RuntimeWarning: overflow encountered in matmul
+  grad[:n_features] = X.T @ grad_pointwise + l2_reg_strength * weights
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:330: RuntimeWarning: invalid value encountered in matmul
+  grad[:n_features] = X.T @ grad_pointwise + l2_reg_strength * weights
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+{"created": "data/iter_params/R1/v3/houjuu_prob/model_meta.json", "model": "data/iter_params/R1/v3/houjuu_prob/model.json", "status": "trained"}
+$ /usr/local/bin/python3 tools/train_model_stub.py --task betaori --version-dir data/iter_params/R1 --dataset data/iter_samples/R1.jsonl --validation-split 0.2 --model-kind auto
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:200: RuntimeWarning: divide by zero encountered in matmul
+  raw_prediction = X @ weights + intercept
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:200: RuntimeWarning: overflow encountered in matmul
+  raw_prediction = X @ weights + intercept
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:200: RuntimeWarning: invalid value encountered in matmul
+  raw_prediction = X @ weights + intercept
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:330: RuntimeWarning: divide by zero encountered in matmul
+  grad[:n_features] = X.T @ grad_pointwise + l2_reg_strength * weights
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:330: RuntimeWarning: overflow encountered in matmul
+  grad[:n_features] = X.T @ grad_pointwise + l2_reg_strength * weights
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:330: RuntimeWarning: invalid value encountered in matmul
+  grad[:n_features] = X.T @ grad_pointwise + l2_reg_strength * weights
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+{"created": "data/iter_params/R1/v3/betaori/model_meta.json", "model": "data/iter_params/R1/v3/betaori/model.json", "status": "trained"}
+$ /usr/local/bin/python3 tools/train_model_stub.py --task tsumo_num --version-dir data/iter_params/R1 --dataset data/iter_samples/R1.jsonl --validation-split 0.2 --model-kind auto
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: divide by zero encountered in matmul
+  return X @ coef_ + self.intercept_
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: overflow encountered in matmul
+  return X @ coef_ + self.intercept_
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: invalid value encountered in matmul
+  return X @ coef_ + self.intercept_
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: divide by zero encountered in matmul
+  return X @ coef_ + self.intercept_
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: overflow encountered in matmul
+  return X @ coef_ + self.intercept_
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: invalid value encountered in matmul
+  return X @ coef_ + self.intercept_
+{"created": "data/iter_params/R1/v3/tsumo_num/model_meta.json", "model": "data/iter_params/R1/v3/tsumo_num/model.json", "status": "trained"}
+$ /usr/local/bin/python3 tools/train_model_stub.py --task ryukyoku_prob --version-dir data/iter_params/R1 --dataset data/iter_samples/R1.jsonl --validation-split 0.2 --model-kind auto
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:200: RuntimeWarning: divide by zero encountered in matmul
+  raw_prediction = X @ weights + intercept
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:200: RuntimeWarning: overflow encountered in matmul
+  raw_prediction = X @ weights + intercept
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:200: RuntimeWarning: invalid value encountered in matmul
+  raw_prediction = X @ weights + intercept
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:330: RuntimeWarning: divide by zero encountered in matmul
+  grad[:n_features] = X.T @ grad_pointwise + l2_reg_strength * weights
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:330: RuntimeWarning: overflow encountered in matmul
+  grad[:n_features] = X.T @ grad_pointwise + l2_reg_strength * weights
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:330: RuntimeWarning: invalid value encountered in matmul
+  grad[:n_features] = X.T @ grad_pointwise + l2_reg_strength * weights
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+{"created": "data/iter_params/R1/v3/ryukyoku_prob/model_meta.json", "model": "data/iter_params/R1/v3/ryukyoku_prob/model.json", "status": "trained"}
+$ /usr/local/bin/python3 tools/train_model_stub.py --task agari_score --version-dir data/iter_params/R1 --dataset data/iter_samples/R1.jsonl --validation-split 0.2 --model-kind auto
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: divide by zero encountered in matmul
+  return X @ coef_ + self.intercept_
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: overflow encountered in matmul
+  return X @ coef_ + self.intercept_
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: invalid value encountered in matmul
+  return X @ coef_ + self.intercept_
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: divide by zero encountered in matmul
+  return X @ coef_ + self.intercept_
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: overflow encountered in matmul
+  return X @ coef_ + self.intercept_
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: invalid value encountered in matmul
+  return X @ coef_ + self.intercept_
+{"created": "data/iter_params/R1/v3/agari_score/model_meta.json", "model": "data/iter_params/R1/v3/agari_score/model.json", "status": "trained"}
+$ /usr/local/bin/python3 tools/train_model_stub.py --task houjuu_score --version-dir data/iter_params/R1 --dataset data/iter_samples/R1.jsonl --validation-split 0.2 --model-kind auto
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: divide by zero encountered in matmul
+  return X @ coef_ + self.intercept_
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: overflow encountered in matmul
+  return X @ coef_ + self.intercept_
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: invalid value encountered in matmul
+  return X @ coef_ + self.intercept_
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: divide by zero encountered in matmul
+  return X @ coef_ + self.intercept_
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: overflow encountered in matmul
+  return X @ coef_ + self.intercept_
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: invalid value encountered in matmul
+  return X @ coef_ + self.intercept_
+{"created": "data/iter_params/R1/v3/houjuu_score/model_meta.json", "model": "data/iter_params/R1/v3/houjuu_score/model.json", "status": "trained"}
+
+============================================================
+R2: R2: V3(R1) self-play (temperature sampling), depth=3
+============================================================
+$ LINHAI_V3_PARAMS_DIR=data/iter_params/R1 (loading R1 bundle for R2)
+$ LINHAI_V3_PROFILE=prod /usr/local/bin/python3 tools/selfplay_sample.py --policy-a orchestrator:v3 --policy-b orchestrator:v3 --games 10000 --seed 1 --output data/iter_samples/R2.jsonl
+{
+  "policy_a": "v3",
+  "policy_b": "v3",
+  "games_played": 10000,
+  "steps_recorded": 166493,
+  "output": "data/iter_samples/R2.jsonl",
+  "kinds": {
+    "ron": 4059,
+    "tsumo": 5941
+  },
+  "elapsed_seconds": 5295.85,
+  "seed": 1
+}
+$ /usr/local/bin/python3 tools/train_model_stub.py --task agari_prob --version-dir data/iter_params/R2 --dataset data/iter_samples/R2.jsonl --validation-split 0.2 --model-kind auto
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:200: RuntimeWarning: divide by zero encountered in matmul
+  raw_prediction = X @ weights + intercept
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:200: RuntimeWarning: overflow encountered in matmul
+  raw_prediction = X @ weights + intercept
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:200: RuntimeWarning: invalid value encountered in matmul
+  raw_prediction = X @ weights + intercept
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:330: RuntimeWarning: divide by zero encountered in matmul
+  grad[:n_features] = X.T @ grad_pointwise + l2_reg_strength * weights
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:330: RuntimeWarning: overflow encountered in matmul
+  grad[:n_features] = X.T @ grad_pointwise + l2_reg_strength * weights
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:330: RuntimeWarning: invalid value encountered in matmul
+  grad[:n_features] = X.T @ grad_pointwise + l2_reg_strength * weights
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+{"created": "data/iter_params/R2/v3/agari_prob/model_meta.json", "model": "data/iter_params/R2/v3/agari_prob/model.json", "status": "trained"}
+$ /usr/local/bin/python3 tools/train_model_stub.py --task tenpai_prob --version-dir data/iter_params/R2 --dataset data/iter_samples/R2.jsonl --validation-split 0.2 --model-kind auto
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:200: RuntimeWarning: divide by zero encountered in matmul
+  raw_prediction = X @ weights + intercept
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:200: RuntimeWarning: overflow encountered in matmul
+  raw_prediction = X @ weights + intercept
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:200: RuntimeWarning: invalid value encountered in matmul
+  raw_prediction = X @ weights + intercept
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:330: RuntimeWarning: divide by zero encountered in matmul
+  grad[:n_features] = X.T @ grad_pointwise + l2_reg_strength * weights
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:330: RuntimeWarning: overflow encountered in matmul
+  grad[:n_features] = X.T @ grad_pointwise + l2_reg_strength * weights
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:330: RuntimeWarning: invalid value encountered in matmul
+  grad[:n_features] = X.T @ grad_pointwise + l2_reg_strength * weights
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+{"created": "data/iter_params/R2/v3/tenpai_prob/model_meta.json", "model": "data/iter_params/R2/v3/tenpai_prob/model.json", "status": "trained"}
+$ /usr/local/bin/python3 tools/train_model_stub.py --task houjuu_prob --version-dir data/iter_params/R2 --dataset data/iter_samples/R2.jsonl --validation-split 0.2 --model-kind auto
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:200: RuntimeWarning: divide by zero encountered in matmul
+  raw_prediction = X @ weights + intercept
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:200: RuntimeWarning: overflow encountered in matmul
+  raw_prediction = X @ weights + intercept
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:200: RuntimeWarning: invalid value encountered in matmul
+  raw_prediction = X @ weights + intercept
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:330: RuntimeWarning: divide by zero encountered in matmul
+  grad[:n_features] = X.T @ grad_pointwise + l2_reg_strength * weights
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:330: RuntimeWarning: overflow encountered in matmul
+  grad[:n_features] = X.T @ grad_pointwise + l2_reg_strength * weights
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:330: RuntimeWarning: invalid value encountered in matmul
+  grad[:n_features] = X.T @ grad_pointwise + l2_reg_strength * weights
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+{"created": "data/iter_params/R2/v3/houjuu_prob/model_meta.json", "model": "data/iter_params/R2/v3/houjuu_prob/model.json", "status": "trained"}
+$ /usr/local/bin/python3 tools/train_model_stub.py --task betaori --version-dir data/iter_params/R2 --dataset data/iter_samples/R2.jsonl --validation-split 0.2 --model-kind auto
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:200: RuntimeWarning: divide by zero encountered in matmul
+  raw_prediction = X @ weights + intercept
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:200: RuntimeWarning: overflow encountered in matmul
+  raw_prediction = X @ weights + intercept
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:200: RuntimeWarning: invalid value encountered in matmul
+  raw_prediction = X @ weights + intercept
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:330: RuntimeWarning: divide by zero encountered in matmul
+  grad[:n_features] = X.T @ grad_pointwise + l2_reg_strength * weights
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:330: RuntimeWarning: overflow encountered in matmul
+  grad[:n_features] = X.T @ grad_pointwise + l2_reg_strength * weights
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_linear_loss.py:330: RuntimeWarning: invalid value encountered in matmul
+  grad[:n_features] = X.T @ grad_pointwise + l2_reg_strength * weights
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+{"created": "data/iter_params/R2/v3/betaori/model_meta.json", "model": "data/iter_params/R2/v3/betaori/model.json", "status": "trained"}
+$ /usr/local/bin/python3 tools/train_model_stub.py --task tsumo_num --version-dir data/iter_params/R2 --dataset data/iter_samples/R2.jsonl --validation-split 0.2 --model-kind auto
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: divide by zero encountered in matmul
+  return X @ coef_ + self.intercept_
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: overflow encountered in matmul
+  return X @ coef_ + self.intercept_
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: invalid value encountered in matmul
+  return X @ coef_ + self.intercept_
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: divide by zero encountered in matmul
+  return X @ coef_ + self.intercept_
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: overflow encountered in matmul
+  return X @ coef_ + self.intercept_
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: invalid value encountered in matmul
+  return X @ coef_ + self.intercept_
+{"created": "data/iter_params/R2/v3/tsumo_num/model_meta.json", "model": "data/iter_params/R2/v3/tsumo_num/model.json", "status": "trained"}
+$ /usr/local/bin/python3 tools/train_model_stub.py --task ryukyoku_prob --version-dir data/iter_params/R2 --dataset data/iter_samples/R2.jsonl --validation-split 0.2 --model-kind auto
+{"created": "data/iter_params/R2/v3/ryukyoku_prob/model_meta.json", "model": "data/iter_params/R2/v3/ryukyoku_prob/model.json", "status": "trained"}
+$ /usr/local/bin/python3 tools/train_model_stub.py --task agari_score --version-dir data/iter_params/R2 --dataset data/iter_samples/R2.jsonl --validation-split 0.2 --model-kind auto
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: divide by zero encountered in matmul
+  return X @ coef_ + self.intercept_
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: overflow encountered in matmul
+  return X @ coef_ + self.intercept_
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: invalid value encountered in matmul
+  return X @ coef_ + self.intercept_
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: divide by zero encountered in matmul
+  return X @ coef_ + self.intercept_
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: overflow encountered in matmul
+  return X @ coef_ + self.intercept_
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: invalid value encountered in matmul
+  return X @ coef_ + self.intercept_
+{"created": "data/iter_params/R2/v3/agari_score/model_meta.json", "model": "data/iter_params/R2/v3/agari_score/model.json", "status": "trained"}
+$ /usr/local/bin/python3 tools/train_model_stub.py --task houjuu_score --version-dir data/iter_params/R2 --dataset data/iter_samples/R2.jsonl --validation-split 0.2 --model-kind auto
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/utils/extmath.py:203: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: divide by zero encountered in matmul
+  return X @ coef_ + self.intercept_
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: overflow encountered in matmul
+  return X @ coef_ + self.intercept_
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: invalid value encountered in matmul
+  return X @ coef_ + self.intercept_
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: divide by zero encountered in matmul
+  return X @ coef_ + self.intercept_
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: overflow encountered in matmul
+  return X @ coef_ + self.intercept_
+/Users/fangyajun/Library/Python/3.10/lib/python/site-packages/sklearn/linear_model/_base.py:280: RuntimeWarning: invalid value encountered in matmul
+  return X @ coef_ + self.intercept_
+{"created": "data/iter_params/R2/v3/houjuu_score/model_meta.json", "model": "data/iter_params/R2/v3/houjuu_score/model.json", "status": "trained"}
+
+============================================================
+R3: R3: acceptance_25_8 regression vs ReferenceHuman
+============================================================
+$ LINHAI_V3_PARAMS_DIR=data/iter_params/R2 /usr/local/bin/python3 tools/acceptance_25_8.py --output data/iter_params/acceptance_R3.json
+[seed=1] games=200 windows_ok=17/25 min=-14 avg_chong=3.160 houjuu=0.175 winrate=0.660
+[seed=2] games=200 windows_ok=17/25 min=-39 avg_chong=2.650 houjuu=0.175 winrate=0.620
+[seed=3] games=200 windows_ok=23/25 min=-14 avg_chong=3.500 houjuu=0.160 winrate=0.675
+
+{
+  "passed": false,
+  "all_positive_window_count": 57,
+  "total_window_count": 75,
+  "min_window_chong": -39,
+  "avg_chong_per_game": 3.103,
+  "avg_houjuu_rate": 0.17
+}
+
+============================================================
+Iteration log:
+[
+  {
+    "name": "R1",
+    "started_at": "2026-04-29T14:10:38.803351+00:00",
+    "elapsed_s": 1978.6,
+    "sample_file": "data/iter_samples/R1.jsonl",
+    "bundle_dir": "data/iter_params/R1",
+    "passed": true
+  },
+  {
+    "name": "R2",
+    "started_at": "2026-04-29T14:43:37.428613+00:00",
+    "elapsed_s": 6058.7,
+    "sample_file": "data/iter_samples/R2.jsonl",
+    "bundle_dir": "data/iter_params/R2",
+    "passed": true
+  },
+  {
+    "name": "R3",
+    "passed": false,
+    "report_path": "data/iter_params/acceptance_R3.json",
+    "rc": 1,
+    "started_at": "2026-04-29T16:24:36.142355+00:00",
+    "elapsed_s": 144.7
+  }
+]
+Saved to data/iter_params/iter_log.json

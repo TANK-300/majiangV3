@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
 import os
 import sys
@@ -79,7 +80,33 @@ class V3SearchService:
             "module_dir": str(self._module_dir) if self._module_dir else None,
             "params_dir": str(self._params_dir) if self._params_dir else None,
             "profile": getattr(self, "_profile", None),
+            # spec §6.2 / §2.3：发布版本 + bundle 哈希，方便甲方核对部署一致性
+            "model_version": getattr(self, "_model_version", None),
+            "bundle_hash": getattr(self, "_bundle_hash", None),
         }
+
+    @staticmethod
+    def _compute_bundle_hash(bundle_dir: Path) -> str:
+        """SHA-256 of all model.json contents under bundle_dir; first 16 hex chars."""
+        h = hashlib.sha256()
+        for p in sorted(bundle_dir.rglob("model.json")):
+            try:
+                h.update(p.relative_to(bundle_dir).as_posix().encode("utf-8"))
+                h.update(p.read_bytes())
+            except OSError:
+                continue
+        return h.hexdigest()[:16]
+
+    @staticmethod
+    def _resolve_model_version(bundle_dir: Path) -> Optional[str]:
+        """Look for a VERSION file at bundle root; fall back to bundle dir name."""
+        version_file = bundle_dir / "VERSION"
+        if version_file.is_file():
+            try:
+                return version_file.read_text(encoding="utf-8").strip()
+            except OSError:
+                pass
+        return bundle_dir.name
 
     def _load(self) -> None:
         for path in _candidate_module_dirs():
@@ -141,6 +168,10 @@ class V3SearchService:
                     break
             if loaded_params:
                 self._load_reason = "ok"
+                # spec §6.2: 上线后甲方可通过 /debug/engine_status 核对 bundle 一致性
+                if self._params_dir:
+                    self._model_version = self._resolve_model_version(self._params_dir)
+                    self._bundle_hash = self._compute_bundle_hash(self._params_dir)
             else:
                 self._load_reason = "params_not_found"
         except Exception as exc:
@@ -217,6 +248,9 @@ class V3SearchService:
         opponent_discards: List[int] = []
         opponent_meld_count = 0
         opponent_discard_count = 0
+        # Phase A §3.5.3: compute_opp_pressure_score 依赖
+        opponent_honor_triplets = 0
+        opp_white_meld_count = 0
         for idx, wind in enumerate(wind_order):
             snapshot = state.players.get(wind)
             jikazes.append(idx)
@@ -230,6 +264,25 @@ class V3SearchService:
                     tile_int = self._mod.tile_str_to_int(self._tile_to_mjai(tile))
                     if tile_int > 0:
                         opponent_discards.append(tile_int)
+                # Phase A: 扫对手副露逐张牌，统计字牌刻子 + 白板副露
+                # meld.type 取值：chi / peng / ming_gang / an_gang / bu_gang
+                # 字牌刻子 = peng/ming_gang/an_gang/bu_gang 且代表牌为字牌（31..37）
+                # 白板副露 = 任一副露牌为白板（mjai 字符串 "P"，转 hai 后 == 35）
+                for meld in snapshot.melds:
+                    meld_type = str(getattr(meld, "type", ""))
+                    meld_tile_ints = []
+                    for tile in getattr(meld, "tiles", []) or []:
+                        tile_int = self._mod.tile_str_to_int(self._tile_to_mjai(tile))
+                        if tile_int > 0:
+                            meld_tile_ints.append(tile_int)
+                    if not meld_tile_ints:
+                        continue
+                    representative = meld_tile_ints[0]
+                    is_triplet_like = meld_type in {"peng", "ming_gang", "an_gang", "bu_gang"}
+                    if is_triplet_like and 31 <= representative <= 37:
+                        opponent_honor_triplets += 1
+                    if any(t == 35 for t in meld_tile_ints):
+                        opp_white_meld_count += 1
         gs.set_player_snapshots(jikazes, discard_counts, meld_counts, reach_flags)
 
         canonical.opponent_discards = opponent_discards
@@ -243,6 +296,9 @@ class V3SearchService:
         self._set_optional_attr(canonical, "contract_counter", int(getattr(player, "contract_counter", 0)))
         self._set_optional_attr(canonical, "opponent_meld_count", opponent_meld_count)
         self._set_optional_attr(canonical, "opponent_discard_count", opponent_discard_count)
+        # Phase A §3.5.3: 副露压力辅助字段（compute_opp_pressure_score 内部使用）
+        self._set_optional_attr(canonical, "opponent_honor_triplets", opponent_honor_triplets)
+        self._set_optional_attr(canonical, "opp_white_meld_count", opp_white_meld_count)
         canonical.can_win = not bool(
             getattr(player, "passed_hu_this_round", False)
             or getattr(player, "pass_hu_this_round", False)

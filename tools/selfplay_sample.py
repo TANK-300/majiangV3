@@ -200,7 +200,12 @@ class SamplingGame(SimulatedGame):
 
         # Tsumo check first; if we tsumo we never emit a discard sample here.
         if is_winning_hand(seat.hand):
-            return GameResult(winner=seat_idx, loser=None, kind="tsumo", turns=0)
+            # Use the parent class helper so winning_hand / qingyise / hunyise /
+            # ziyise are populated for downstream score_label computation.
+            return self._make_win_result(
+                winner_idx=seat_idx, loser_idx=None, kind="tsumo",
+                winning_hand=list(seat.hand),
+            )
 
         decision = self.policies[seat_idx].choose_discard(self, seat_idx)
         if decision.tile not in seat.hand:
@@ -223,11 +228,14 @@ class SamplingGame(SimulatedGame):
             except Exception:
                 take_ron = True
             if take_ron:
-                return GameResult(
-                    winner=1 - seat_idx,
-                    loser=seat_idx,
+                opp_idx = 1 - seat_idx
+                opp_seat = self.seats[opp_idx]
+                winning_hand = list(opp_seat.hand) + [decision.tile]
+                return self._make_win_result(
+                    winner_idx=opp_idx,
+                    loser_idx=seat_idx,
                     kind="ron",
-                    turns=0,
+                    winning_hand=winning_hand,
                     houjuu_seat=seat_idx,
                 )
             self.seats[1 - seat_idx].passed_hu_this_round = True
@@ -252,6 +260,11 @@ def _sample_to_record(step: SampleStep, result: GameResult, total_steps: int) ->
 
     can_win_label = own_outcome == "win"
     houjuu_label = result.houjuu_seat == step.seat_index
+
+    # 验收 (spec §3.3): score_label = 本局结算冲数从 step.seat_index 视角看的带号值
+    # winner: +N，loser (放炮): -N，tsumo 时其他玩家也算 -N（共付胜者的 N）
+    from tools.selfplay_eval import chong_for_seat
+    score_label = chong_for_seat(result, step.seat_index)
     # "tsumo_num" semantics: number of discards it takes until the game ends
     # from this step's point of view. Regression target for the tsumo_num
     # model; smaller == we were closer to tenpai.
@@ -290,6 +303,8 @@ def _sample_to_record(step: SampleStep, result: GameResult, total_steps: int) ->
         "task_labels": {
             "best_discard_tile": step.discard_tile,
             "can_win_label": can_win_label,
+            # score_label: signed chong (验收 §3.3)，喂 agari_score / houjuu_score
+            "score_label": int(score_label),
         },
         "source_meta": {
             "houjuu_label": int(bool(houjuu_label)),

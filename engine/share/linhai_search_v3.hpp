@@ -3,6 +3,7 @@
 
 #include "linhai_ev_engine.hpp"
 #include "linhai_game_adapter.hpp"
+#include "linhai_score.hpp"
 #include <chrono>
 #include <unordered_map>
 #include <string>
@@ -136,6 +137,13 @@ struct CanonicalGameState {
     int contract_counter = 0;
     int opponent_meld_count = 0;
     int opponent_discard_count = 0;
+    // Phase A spec §3.5.3: 副露压力辅助字段。这些是 compute_opp_pressure_score
+    // 的内部依赖（**不进 build_state_features**，避免训练特征漂移）。Python 在
+    // _build_canonical_state 时根据对手 melds/discards 的实际牌码内容填充。
+    //   opponent_honor_triplets: 对手副露中字牌刻子数（碰/明杠/加杠且 hai>=31 && hai<=37）
+    //   opp_white_meld_count:    对手副露含白板（hai==35）的副露条数（0 或 1+）
+    int opponent_honor_triplets = 0;
+    int opp_white_meld_count = 0;
 
     void refresh_counts();
 };
@@ -152,6 +160,10 @@ public:
 
     SearchResult recommend_discard_v3(CanonicalGameState state);
     SearchResult recommend_response_v3(CanonicalGameState state);
+
+    // Phase A spec §3.5.3: 副露压力综合标量，0=无威胁，~1.5=清一色+字一色+抓冲全开。
+    // A4 将在 EV 公式里以此动态加权 λ/μ；A3 仅暴露此 helper，无外部行为变化。
+    float compute_opp_pressure_score(const CanonicalGameState& state) const;
 
 private:
     SearchConfig config_;
@@ -172,6 +184,20 @@ private:
     V3GBDTModel betaori_gbdt_;
     V3GBDTModel tsumo_num_gbdt_;
     V3GBDTModel ryukyoku_gbdt_;
+    // 验收 (spec §3.3): score-regression heads. 学的是带号冲数（E[my_chong] /
+    // E[loss_chong]），由 train_model_stub.py --task agari_score / houjuu_score 产出。
+    // 加载到这两个 head 后，search 时把 total_ev = agari_score - houjuu_score 作为
+    // 弃牌排序主键（替代旧的 prob × 番数估算）。如果 score-head 未加载，回退到
+    // 旧的 6-prob-head 路径，保证向后兼容。
+    V3LinearModel agari_score_model_;
+    V3LinearModel houjuu_score_model_;
+    V3GBDTModel agari_score_gbdt_;
+    V3GBDTModel houjuu_score_gbdt_;
+    // Phase A spec §3.5: 评分/风险加权配置表。从 v3/score_table.json 加载，
+    // 缺失时使用 ScoreTable 内的默认值（与 spec §3.5.1 一致：lambda_base=1.5,
+    // mu_base=2.0, opp_meld_pressure_alpha=1.0...）。A4 在 build_discard_candidates
+    // 中读取 ev_risk_weights / feature_weights 完成动态 λ/μ 加权。
+    linhai_score::ScoreTable score_table_;
     boost::unordered_map<std::size_t, float> future_cache_;
     boost::unordered_map<std::size_t, SearchResult> discard_cache_;
     boost::unordered_map<std::size_t, int> shanten_cache_;
@@ -279,6 +305,27 @@ private:
         int target_hai,
         bool safe
     ) const;
+    // 验收 (spec §3.3): score-aware EV. 返回带号期望冲数（agari 正、houjuu 负）。
+    // 仅当对应 score head 加载成功时返回有效值；否则返回 0（caller 应回退到
+    // prob × heuristic 路径）。
+    float estimate_agari_score(
+        const CanonicalGameState& state,
+        const SearchCandidate& candidate,
+        const std::string& action,
+        int target_hai,
+        bool safe
+    ) const;
+    float estimate_houjuu_score(
+        const CanonicalGameState& state,
+        const SearchCandidate& candidate,
+        const std::string& action,
+        int target_hai,
+        bool safe
+    ) const;
+    bool has_score_heads_loaded() const {
+        return (agari_score_model_.loaded || agari_score_gbdt_.loaded)
+            && (houjuu_score_model_.loaded || houjuu_score_gbdt_.loaded);
+    }
 };
 
 } // namespace linhai

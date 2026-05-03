@@ -1,8 +1,8 @@
 # 临海麻将 V3 — 算法验收方案设计（2026-04-28）
 
 > 这是甲方算法验收（"200 局 25 次 8-局结算积分均为正 / 拿牌到返回 ≤2s P95 / 临海规则与番数完整"）的实施前 spec。  
-> 实现策略代号：**B —— 番数感知 EV + 迭代自对弈蒸馏**。  
-> 写入文档前已与用户对齐（双人临海主验收、1冲=1分、CPU 训练为主、4 周节奏）。
+> 实现策略代号：**A+B 组合迭代 —— Phase A 推理侧防守加固（§3.5）+ Phase B 番数感知 EV 迭代自对弈蒸馏（§4）**。  
+> 写入文档前已与用户对齐（双人临海主验收、1冲=1分、CPU 训练为主、4 周节奏；A+B 组合在 §1.3 实测瓶颈分析后定）。
 
 ---
 
@@ -32,6 +32,20 @@
 | 抓冲 / 三键承包 / 翻屁股 / 四人抓红头 | 字段已存在，红头/翻屁股需核对 | 需逐条核对，四人玩法仅做发牌机制 |
 | 数据需求指标（图中红字标题） | 无真实牌谱 | 全部样本由项目内自对弈产生 |
 
+### 1.3 当前 5-seed 验收实测（基线）
+
+`docs/release/acceptance_report_5seed.json` 实测（V3 当前模型 vs ReferenceHumanPolicy，5 seed × 200 局）：
+
+| 指标 | 现状 | 验收门槛（§6.1 T6）| 判定 |
+|---|---|---|---|
+| 25/25 全正窗口数 | 106/125（84.8%）| 125/125 | ❌ |
+| 最差单窗口 | -43 冲 | ≥ +2 | ❌ |
+| 总放炮率 | 14.8% | ≤ 12% | ❌ |
+| 平均冲数 / 局 | 3.972 | ≥ 0.5 | ✅ |
+| 单 seed 胜率 | 65-71% | — | ✅ |
+
+**诊断**：模型胜率与赢面充足，瓶颈是**爆炸性输局**（min_window -43、放炮率 14.8%）。19 个不过窗口的极端值（-41/-37/-43）集中在 seed 2/4，对应"被对手清一色/树掉还原打爆"的长尾失败模式。**核心问题不是模型欠拟合，是 EV 公式风险定价偏弱与防守阈值不灵敏**——单纯 §4 蒸馏不一定打中防守，需先做 §3.5 Phase A 推理侧防守加固，再进 §4 Phase B 蒸馏，组合迭代。
+
 ---
 
 ## 2. 验收口径与离线代理对手
@@ -43,17 +57,23 @@
 
 ### 2.2 ReferenceHumanPolicy 设计
 
+> **设计原则**：代理对手必须**比平均真人略强**，离线 25/25 才能保证真人验收 25/25。  
+> 选定基线：V2 baseline 已经是 EV 搜索（不是简单启发式），加上下面几个修饰让它接近"中等熟练真人"水平。如果实测 V3 vs ReferenceHuman 都打不过，就基本可以判定真人验收过不了，越早暴露越好。
+
 新增文件 `backend/app/services/reference_human.py`，作为可复现的"近似真人"代理对手：
 
 | 模块 | 行为 | 目的 |
 |---|---|---|
-| 基础动作 | 现有 V2 baseline (`v2_fallback.py`) | 真人级 EV 估算 |
-| 防守层 | houjuu_prob > 0.25 时有 30% 概率 betaori | 模拟真人保守 |
-| 番数倾向 | 检测到清一色 / 混一色 雏形（≥6 张同色）时偏向追大番 | 模拟真人贪番 |
-| 错牌噪声 | 5% 概率从 top-3 候选随机选 | 模拟真人失误 |
-| 抓冲倾向 | 抓冲红头存在时优先满足门风牌 | 模拟真人偏好 |
+| 基础动作 | V2 baseline (`v2_fallback.py`) 完整 EV 估算（**不是 heuristic**） | 接近熟练真人级 |
+| 防守层 | houjuu_prob > 0.20 时 50% 概率 betaori（更保守） | 真人面对放炮风险更敏感 |
+| 番数倾向 | ≥6 张同色时偏好清一色路线 +25% EV 加权 | 真人贪大番 |
+| 安全度感知 | 优先现物 / 筋牌 / 壁牌（与本期 V3 共享 safety 特征） | 真人会读牌河 |
+| 抓冲偏好 | 抓冲红头存在时优先满足门风牌 | 真人偏好 |
+| 错牌噪声 | 3% 概率从 top-2 候选随机选（**只 3%，不是 5%**） | 真人有失误但不多 |
 
-**作用**：让 AI 必须真懂麻将而不是钻 heuristic 的漏洞；离线代理输了，对真人也大概率会输。
+**强度校准**：用 `tools/calibrate_reference.py`（**新增**）跑 ReferenceHumanPolicy vs heuristic 200 局，必须达到 **胜率 ≥ 70%、放炮率 ≤ 12%** 才发布；否则调超参重跑。这是为了保证它本身就是个不弱的对手。
+
+**作用**：离线 25/25 通过，等于 V3 比"中等熟练真人"还稳，对甲方真人验收提供安全余量。
 
 ### 2.3 真人验收兜底
 
@@ -132,7 +152,65 @@ ChongBreakdown calc_chong(const Tehai& hand,
 
 ---
 
-## 4. 训练管线 — 迭代自对弈蒸馏
+## 3.5 Phase A — 推理侧防守加固（验收前置阶段，3-5 天）
+
+> §1.3 诊断显示当前瓶颈是 EV 风险定价与防守阈值，不是模型欠拟合。Phase A 在不重训的前提下，先把可控的防守先验调到位；通过 §3.5.4 验证门槛后再进入 §4 Phase B 迭代蒸馏。Phase A 调好的参数 + 防守特征会作为 Phase B R0 训练的种子环境，让 §4 R0 自对弈样本天然继承防守倾向。
+
+### 3.5.1 风险厌恶 EV 重加权
+
+- 当前 EV 主键：`total_ev = E[my_score] - E[opp_score]`（线性期望差，对长尾损失不敏感）
+- 改造为：
+  ```
+  total_ev = E[my_score]
+           - λ · E[opp_score]
+           - μ · max(0, P(opp_chong ≥ 4) · expected_loss_if_opp_high)
+  ```
+  - `λ`：放炮基础惩罚倍数（**默认 1.5**，越大越保守）
+  - `μ`：长尾损失惩罚（针对对手 ≥4 冲胡牌路径，**默认 2.0**）
+  - `P(opp_chong ≥ 4)`：从 `opp_meld_pressure` + 同色张数 + 字风刻子可见信号近似
+- 写入 `engine/params/v3/score_table.json::ev_risk_weights`，C++ 推理侧 `linhai_search_v3.cpp::compute_ev` 直接读，**不需要重训**
+
+### 3.5.2 betaori 触发阈值动态化
+
+- 当前：`houjuu_prob > 0.20` 硬阈值触发 betaori
+- 改造为对手压力联动的动态阈值：
+  - 基础阈值：**0.15**（从 0.20 下调）
+  - 对手 ≥1 副露 + 同色 ≥3 张：阈值再 -0.03
+  - 对手疑似清一色 / 树掉还原（同色 ≥6 / 字风刻子 / 白板被碰杠）：阈值再 -0.05，且 EV 损失上限上调 +50%
+- 写入 `engine/params/v3/score_table.json::betaori_thresholds`
+
+### 3.5.3 副露压力感知特征加权（Phase A 提前实现高价值子集）
+
+- §4.4 Phase B 完整规划了 5 个特征族：`safety_genbutsu_t_X` / `safety_suji_t_X` / `safety_kabe_t_X` / `opp_meld_pressure` / `opp_riichi_proxy`
+- **Phase A 只提前实现高价值的 2 个**（其余 3 个留给 Phase B 训练时再做，避免 Phase A 范围爆炸）：
+  - `opp_meld_pressure`：对手副露数 + 副露同色集中度（直接打"被清一色"长尾失败模式）
+  - `safety_genbutsu_t_X`：对手牌河现物标记（最便宜、收益最高的安全度信号）
+- Phase A 在 C++ 推理侧 `build_state_features` 实现这两个 + 直接对 EV 做线性修正（手写权重 `score_table.json::feature_weights`），作为 Phase B 的"防守先验"
+- 其余 3 个特征（suji / kabe / riichi_proxy）按 §4.4 在 Phase B 训练侧扩展时同步加
+
+### 3.5.4 验证门槛（Phase A 完成判定）
+
+Phase A 调参完成后，必须达到以下指标才可进入 §4 Phase B；否则继续调参或回滚：
+
+| 指标 | Phase A 目标 | 现状 | 备注 |
+|---|---|---|---|
+| 5 seed × 200 局 25/25 全正窗口数 | ≥ 118/125（94%）| 106/125 | 期望 +12 |
+| 最差单窗口 | ≥ -8 冲 | -43 | 主要打"爆炸窗口" |
+| 总放炮率 | ≤ 11% | 14.8% | 防守加固直接收益 |
+| 平均冲数 / 局 | ≥ 1.5 | 3.972 | A 后预期 2-3，可接受代价 |
+| 单步 P95 延迟 | ≤ 800ms | ~50ms | 不引入新搜索深度 |
+
+由 `tools/acceptance_25_8.py` 运行验证；新增 `tools/phase_a_tune.py`（**新增**）做参数网格搜索，输出 `engine/params/v3/score_table_phase_a.json` 候选。
+
+### 3.5.5 与 Phase B 的衔接
+
+- Phase A 的 `score_table.json` 调参结果 + 防守特征作为 §4 Phase B R0 训练的初始环境
+- Phase B `score_label` 自对弈样本由 Phase A 模型生成，**自动继承** Phase A 的防守倾向
+- B 训练完成后，部分 Phase A 硬编码权重（λ / μ / 阈值）原则上可逐步退化为可学习头；本期不实现，作为后续优化项
+
+---
+
+## 4. 训练管线 — 迭代自对弈蒸馏（Phase B）
 
 ### 4.1 新增 / 改造脚本
 
@@ -141,9 +219,11 @@ ChongBreakdown calc_chong(const Tehai& hand,
 | `tools/selfplay_eval.py` | 改造 | 接进 `linhai_score`，每局产出真实冲数 |
 | `tools/selfplay_sample.py` | 改造 | 样本带 `score_label`（regression target） |
 | `tools/train_model_stub.py` | 改造 | `--task agari_score / houjuu_score`，objective=regression |
-| `tools/acceptance_25_8.py` | **新增** | 200 局 vs ReferenceHumanPolicy，输出 25 个窗口分数 + worst-case 复盘 |
+| `tools/acceptance_25_8.py` | **新增** | 5 seed × 200 局 vs ReferenceHumanPolicy，输出 125 个窗口分数 + worst-case 复盘 |
+| `tools/calibrate_reference.py` | **新增** | ReferenceHumanPolicy vs heuristic 200 局校准，强度未达标则失败 |
 | `tools/perf_regression.py` | **新增** | 4 个最坏牌型 P95 检测，超 800ms 失败 |
 | `tools/iterative_train.py` | **新增** | 串联 R0-R3 多轮训练流水线 |
+| `tools/phase_a_tune.py` | **新增** | Phase A 参数网格搜索（§3.5.4），输出候选 `score_table_phase_a.json` |
 | `backend/app/services/reference_human.py` | **新增** | 离线代理对手 |
 
 ### 4.2 迭代轮次
@@ -213,13 +293,31 @@ if elapsed > 95% budget:  switch to V2 fallback
 
 ## 6. 验收与交付
 
-### 6.1 离线 25/25 回归（CI 强制）
+### 6.1 离线 25/25 回归（CI 强制，含真人安全余量）
 
 `tools/acceptance_25_8.py`：
 - 200 局 AI vs ReferenceHumanPolicy，按 8-局窗口算积分
-- 输出：`acceptance_report.json`（25 个窗口分数 + 通过/失败标记 + 最差 3 个窗口对局复盘）
-- 通过门槛（T6 默认）：**25/25 窗口分数 > 0** 且 **平均冲数 / 局 ≥ 0.3**
-- CI 失败条件：任一窗口 ≤ 0 或 P95 引擎延迟 > 800ms
+- **多 seed 验证**：默认 5 个不同 seed（1/2/3/4/5）独立跑，**全部 5×25/25 = 125 个窗口都必须 > 0**，避免单 seed 运气过线
+- 输出：`acceptance_report.json`（每 seed 25 个窗口分数 + 通过/失败标记 + 最差 5 个窗口对局复盘）
+- **通过门槛**（T6 收紧版）：
+  - 5 seed × 25 窗口 = 125 个窗口**全部 > 0**
+  - 平均冲数 / 局 **≥ 0.5**（原 0.3 上调）
+  - 最差单窗口 **≥ +2 冲**（避免擦边过线）
+  - 总放炮率 **≤ 12%**
+- **真人安全余量解释**：
+  - ReferenceHumanPolicy 已校准为"中等熟练真人"水平（§2.2）
+  - 单 seed 25/25 概率受运气影响约 ±5%，5 seed 全过把假阳性降到 < 0.001%
+  - 平均冲数 0.5 + 最差窗口 +2 冲，对应 V3 vs Reference 单局期望胜率约 60-65%，对真人下降到 50-55% 仍能保证 25/25
+- CI 失败条件：任一窗口 ≤ 0 或 P95 引擎延迟 > 800ms 或最差窗口 < +2 冲
+
+### 6.1.1 真人 dry-run（验收前内测）
+
+R3 完成后、交付甲方前，**项目内组织 4-6 人内测**：每人对 V3 至少 24 局（3 个窗口），观察：
+- 单人窗口胜率分布
+- AI 在副露 / 抢杠 / 抓冲 场景的决策合理性（人工评分）
+- P95 延迟实测
+
+任一内测人员出现 8-局窗口 ≤ 0，回 R2 重训一轮。**这是消除"代理对手 ≠ 真人"模型偏差的最后一道关卡**。
 
 ### 6.2 交付物清单（按图"三、交付内容"）
 
@@ -242,7 +340,7 @@ if elapsed > 95% budget:  switch to V2 fallback
 | T3 | 三键承包公式 | 两家平摊全部冲数 |
 | T4 | 翻屁股每人发牌数 | 2 |
 | T5 | 流局张数 | 6 |
-| T6 | 验收 R3 通过门槛 | 25/25 全正 + 平均冲数 ≥ 0.3 |
+| T6 | 验收 R3 通过门槛 | 5 seed × 25/25 全正 + 平均冲数 ≥ 0.5 + 最差窗口 ≥ +2 冲 + 放炮率 ≤ 12% + 真人 dry-run 全过 |
 | T7 | 训练资源 | CPU；GPU 留接口不实现 |
 | T8 | 验收周期 | 4 周（R0-R3） |
 | T9 | 四人抓红头玩法 AI | 不做四人 AI；只做发牌/抓冲机制；AI 估值仍用双人模型 |
@@ -253,7 +351,7 @@ if elapsed > 95% budget:  switch to V2 fallback
 
 | 风险 | 影响 | 缓解 |
 |---|---|---|
-| 真人对战胜率不达预期 | 验收失败 | R3 后增加 "human-in-the-loop" 调参轮，提前内部找几人测试 |
+| 真人对战胜率不达预期 | 验收失败 | (1) ReferenceHumanPolicy 校准为 ≥70% vs heuristic（§2.2）；(2) 5 seed × 25/25 + 最差窗口 ≥+2 冲 给运气留余量（§6.1）；(3) R3 后强制真人 dry-run 4-6 人内测（§6.1.1），不过则回 R2 |
 | 番数引擎漏条款 | 自对弈结算与真人结算不一致 | 单元测试覆盖图全部条款；`tests/python/test_linhai_score.py` 保证 |
 | 训练 / 推理特征漂移 | head 静默退化为 0 | `test_feature_parity.py` CI 兜底 |
 | 性能回归 | P95 > 800ms | `perf_regression.py` 阻塞 merge |
@@ -274,12 +372,21 @@ if elapsed > 95% budget:  switch to V2 fallback
 
 ## 9. 实施顺序（顶层）
 
-具体 step-by-step 计划由 writing-plans skill 在本 spec 通过后产出。顶层顺序：
+具体 step-by-step 计划由 writing-plans skill 在本 spec 通过后产出。顶层顺序按 **Phase A → Phase B** 组合迭代：
 
-1. 番数引擎 `linhai_score` + 单元测试 + score_table.json
-2. ReferenceHumanPolicy + acceptance_25_8.py（先用现有模型跑通流水）
-3. 改造 selfplay_sample / train_model_stub 走 score_label 路径
-4. 防守特征扩展 + feature_parity 测试
-5. iterative_train R0-R2
-6. 性能回归 perf_regression.py
-7. R3 验收 + 交付物打包
+**Phase A（3-5 天，不重训，先把防守先验调到位）：**
+
+1. 番数引擎 `linhai_score` + 单元测试 + `score_table.json`（已基本完成，核对条款覆盖）
+2. ReferenceHumanPolicy + `acceptance_25_8.py` 流水跑通（已完成，作为 Phase A 调参基线）
+3. **§3.5.1** 风险厌恶 EV 重加权（C++ 推理侧 + `score_table.json::ev_risk_weights`）
+4. **§3.5.2** betaori 动态阈值（`score_table.json::betaori_thresholds`）
+5. **§3.5.3** 副露压力感知特征 + 推理侧 EV 修正（C++ `build_state_features`）
+6. `tools/phase_a_tune.py` 参数网格搜索 + Phase A 验证门槛（§3.5.4）— **必须 ≥118/125 才进入 Phase B**
+
+**Phase B（4 周节奏，迭代蒸馏，把剩余硬骨头吃掉）：**
+
+7. 改造 `selfplay_sample` / `train_model_stub` 走 `score_label` 回归路径
+8. 防守特征扩展（与 Phase A 推理侧同步）+ `feature_parity` 测试
+9. `iterative_train` R0-R2（基于 Phase A 调好的环境）
+10. 性能回归 `perf_regression.py`
+11. R3 验收（5 seed × 25/25 全正 + 真人 dry-run）+ 交付物打包

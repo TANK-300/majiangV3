@@ -1,0 +1,24 @@
+{
+  "task": "tenpai_prob",
+  "created_at": "2026-04-29T12:13:37.147455+00:00",
+  "status": "trained",
+  "label_key": "source_meta.tenpai_label",
+  "dataset": {
+    "dataset_path": "data/iter_samples/R0_10k.jsonl",
+    "total_records": 500000,
+    "records_with_task_labels": 500000,
+    "label_key_counts": {
+      "best_discard_tile": 500000,
+      "can_win_label": 500000,
+      "score_label": 500000
+    }
+  },
+  "trained_examples": 500000,
+  "skipped_records": 0,
+  "model_file": "data/iter_params/R0/v3/tenpai_prob/model.json",
+  "model_type": "logistic_regression",
+  "metrics": {
+    "train_accuracy": 0.94407,
+    "val_accuracy": 0.94436
+  }
+}

@@ -16,6 +16,9 @@ build/
 # Training/selfplay artifacts. Big JSONL datasets stay local; PR #/ docs
 # reference data/final_summary.json which IS small and IS committed.
 data/*.jsonl
+data/**/*.jsonl
+data/iter_samples/*
+!data/iter_samples/README.md
 data/neural_v1/model.pt
 data/neural_v1/model.onnx
 data/neural_v1/model.onnx.data

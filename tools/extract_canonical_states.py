@@ -258,6 +258,42 @@ def build_model_features(
         if opp_disc_c > opp_max_tile_disc:
             opp_max_tile_disc = int(opp_disc_c)
 
+    # 验收 (spec §4.4): per-tile suji (筋) + kabe (壁) safety signals.
+    # 必须与 engine/share/linhai_search_v3.cpp::build_state_features 同步加。
+    # 由 tests/python/test_feature_parity.py 兜底名字一致性。
+    suji_set: set = set()
+    for suit_suffix in ("w", "t"):
+        for mid in (4, 5, 6):
+            mid_tile = f"{mid}{suit_suffix}"
+            if opponent_discard_counts.get(mid_tile, 0) > 0:
+                if mid == 4:
+                    suji_set.update({f"1{suit_suffix}", f"7{suit_suffix}"})
+                elif mid == 5:
+                    suji_set.update({f"2{suit_suffix}", f"8{suit_suffix}"})
+                elif mid == 6:
+                    suji_set.update({f"3{suit_suffix}", f"9{suit_suffix}"})
+
+    # Kabe (壁): visible = 4 - remaining_counts. visible >= 3 marks adjacent
+    # tiles as safer (opponent unlikely to be waiting on this neighbour).
+    kabe_set: set = set()
+    for suit_suffix in ("w", "t"):
+        for r in range(1, 10):
+            tile = f"{r}{suit_suffix}"
+            visible_count = 4 - int(remaining_counts.get(tile, 4))
+            if visible_count >= 3:
+                if r > 1:
+                    kabe_set.add(f"{r-1}{suit_suffix}")
+                if r < 9:
+                    kabe_set.add(f"{r+1}{suit_suffix}")
+
+    for tile_code in PER_TILE_FEATURE_ORDER:
+        per_tile_features[_feature_key_for_tile("safety_suji_t", tile_code)] = (
+            1.0 if tile_code in suji_set else 0.0
+        )
+        per_tile_features[_feature_key_for_tile("safety_kabe_t", tile_code)] = (
+            1.0 if tile_code in kabe_set else 0.0
+        )
+
     # A-2c-3: aggregate defensive signals. These let the GBDT's houjuu/betaori
     # heads see opponent-threat at a glance instead of reconstructing it from
     # 25 per-tile counts. Kept cheap to compute.

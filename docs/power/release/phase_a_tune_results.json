@@ -1,0 +1,77 @@
+{
+  "grid": "small",
+  "results": [
+    {
+      "params": {
+        "lambda_base": 1.0,
+        "betaori_base": 0.13,
+        "qingyise_drop": 0.05
+      },
+      "all_positive_count": 2,
+      "total": 2,
+      "min_window": 8,
+      "avg_chong": 4.1875,
+      "houjuu_rate": 0.1875
+    },
+    {
+      "params": {
+        "lambda_base": 1.0,
+        "betaori_base": 0.15,
+        "qingyise_drop": 0.05
+      },
+      "all_positive_count": 1,
+      "total": 2,
+      "min_window": -12,
+      "avg_chong": 1.6875,
+      "houjuu_rate": 0.25
+    },
+    {
+      "params": {
+        "lambda_base": 1.5,
+        "betaori_base": 0.13,
+        "qingyise_drop": 0.05
+      },
+      "all_positive_count": 2,
+      "total": 2,
+      "min_window": 8,
+      "avg_chong": 4.1875,
+      "houjuu_rate": 0.1875
+    },
+    {
+      "params": {
+        "lambda_base": 1.5,
+        "betaori_base": 0.15,
+        "qingyise_drop": 0.05
+      },
+      "all_positive_count": 1,
+      "total": 2,
+      "min_window": -12,
+      "avg_chong": 1.6875,
+      "houjuu_rate": 0.25
+    },
+    {
+      "params": {
+        "lambda_base": 2.0,
+        "betaori_base": 0.13,
+        "qingyise_drop": 0.05
+      },
+      "all_positive_count": 2,
+      "total": 2,
+      "min_window": 8,
+      "avg_chong": 4.1875,
+      "houjuu_rate": 0.1875
+    },
+    {
+      "params": {
+        "lambda_base": 2.0,
+        "betaori_base": 0.15,
+        "qingyise_drop": 0.05
+      },
+      "all_positive_count": 1,
+      "total": 2,
+      "min_window": -12,
+      "avg_chong": 1.6875,
+      "houjuu_rate": 0.25
+    }
+  ]
+}

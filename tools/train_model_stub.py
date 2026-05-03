@@ -16,6 +16,12 @@ TASK_LABEL_KEYS = {
     "betaori": "source_meta.betaori_label",
     "tsumo_num": "source_meta.tsumo_num_label",
     "ryukyoku_prob": "source_meta.ryukyoku_label",
+    # 验收任务（spec §3.3）：number-of-chong regression。
+    # 同一标签 score_label 喂两个 head；trainer 会按数值正负自动学到不同模式。
+    # 对于 winner 视角，score_label > 0 且 head 学的是 E[my_score]。
+    # 对于 loser 视角，score_label < 0 且 head 学的是 -E[opp_score]。
+    "agari_score": "task_labels.score_label",
+    "houjuu_score": "task_labels.score_label",
 }
 
 
@@ -696,7 +702,11 @@ def write_placeholder_metadata(output_dir: Path, task: str, dataset_path: Option
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train a minimal versioned v3 model bundle.")
-    parser.add_argument("--task", required=True, choices=["agari_prob", "tenpai_prob", "houjuu_prob", "betaori", "tsumo_num", "ryukyoku_prob"])
+    parser.add_argument("--task", required=True, choices=[
+        "agari_prob", "tenpai_prob", "houjuu_prob", "betaori", "tsumo_num", "ryukyoku_prob",
+        # 验收 score-regression heads（spec §3.3）
+        "agari_score", "houjuu_score",
+    ])
     parser.add_argument("--version-dir", required=True)
     parser.add_argument("--dataset", help="Optional canonical JSONL dataset used for training")
     parser.add_argument("--label-key", help="Optional dotted label key path, e.g. task_labels.can_win_label")

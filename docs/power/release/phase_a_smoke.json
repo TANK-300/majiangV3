@@ -1,0 +1,44 @@
+{
+  "passed": false,
+  "all_positive_window_count": 8,
+  "total_window_count": 12,
+  "min_window_chong": -38,
+  "avg_chong_per_game": 3.66,
+  "avg_houjuu_rate": 0.17,
+  "per_seed": [
+    {
+      "seed": 1,
+      "games": 100,
+      "windows": [
+        39,
+        -12,
+        74,
+        85,
+        27,
+        -12,
+        78,
+        -38,
+        -1,
+        31,
+        31,
+        18
+      ],
+      "all_positive": false,
+      "min_window": -38,
+      "avg_chong_per_game": 3.66,
+      "houjuu_rate": 0.17,
+      "winrate": 0.67
+    }
+  ],
+  "thresholds": {
+    "min_window_chong": -1000,
+    "min_avg_chong": -1000.0,
+    "max_houjuu_rate": 1.0,
+    "seeds": [
+      1
+    ],
+    "games_per_seed": 100,
+    "policy_a": "orchestrator:v3",
+    "policy_b": "reference_human"
+  }
+}

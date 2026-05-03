@@ -433,6 +433,32 @@ class NeuralPolicy(Policy):
         return DiscardDecision(tile=best_tile, engine="neural", reason=f"score={best_score:.3f}")
 
 
+class ReferenceHumanAdapter(Policy):
+    """Wraps backend.app.services.reference_human.ReferenceHumanPolicy as a
+    selfplay Policy. Handles the GameState <-> SimulatedGame state mapping."""
+
+    name = "reference_human"
+
+    def __init__(self, seed: int = 0) -> None:
+        from backend.app.services.reference_human import ReferenceHumanPolicy
+        self._impl = ReferenceHumanPolicy(seed=seed)
+
+    def choose_discard(self, game: "SimulatedGame", seat_idx: int) -> DiscardDecision:
+        state = game.to_core_state(seat_idx)
+        try:
+            result = self._impl.recommend_discard(state)
+        except Exception:
+            return HeuristicPolicy().choose_discard(game, seat_idx)
+        tile = result.get("tile")
+        if not tile or tile not in game.seats[seat_idx].hand:
+            return HeuristicPolicy().choose_discard(game, seat_idx)
+        return DiscardDecision(
+            tile=normalize_code(tile),
+            engine="reference_human",
+            reason=str(result.get("chosen_by", "")),
+        )
+
+
 def policy_factory(spec: str, rng: random.Random) -> Policy:
     """Build a Policy from a short spec string.
 
@@ -449,6 +475,10 @@ def policy_factory(spec: str, rng: random.Random) -> Policy:
         return HeuristicPolicy()
     if lower == "random":
         return RandomPolicy(rng)
+    if lower in {"reference_human", "human", "reference"}:
+        # seed is derived from rng so multiple instances with different rng
+        # behave independently
+        return ReferenceHumanAdapter(seed=rng.randint(0, 2**31 - 1))
     if lower.startswith("orchestrator"):
         _, _, label = raw.partition(":")
         return OrchestratorPolicy(name=label.strip() or None)
@@ -477,6 +507,9 @@ class Seat:
     hand: List[str] = field(default_factory=list)
     discards: List[str] = field(default_factory=list)
     passed_hu_this_round: bool = False
+    # 验收 (spec §3): 临海特殊机制
+    redhead_pool: List[str] = field(default_factory=list)  # 开局发的 N 张红头牌
+    grab_charge_caught: int = 0                            # 本局已抓冲数
 
 
 @dataclass
@@ -487,6 +520,16 @@ class GameResult:
     turns: int
     houjuu_seat: Optional[int] = None
     steps: int = 0
+    # 胡牌上下文（用于 score_calculator 算冲数；流局时为空 / 0）
+    winning_hand: Optional[List[str]] = None
+    winning_white_count: int = 0
+    is_qingyise: bool = False
+    is_hunyise: bool = False
+    is_ziyise: bool = False
+    # 验收 (spec §3.2 临海特殊条款)
+    has_tree_active: bool = False           # 树掉还原触发（白板暗刻 + has_tree）
+    grab_charge_caught: int = 0             # 本局抓到的抓冲牌数
+    redhead_caught: List[str] = field(default_factory=list)  # 翻屁股红头
 
 
 def _build_wall(rng: random.Random) -> List[str]:
@@ -512,10 +555,15 @@ class SimulatedGame:
 
     def deal(self) -> None:
         self.wall = _build_wall(self.rng)
+        # 验收 (spec §3 翻屁股): 每家发 2 张红头池子（默认 redhead_per_player=2）
+        # 在简化版里，从 wall 头部抽 2 张作为该家的红头池（最终胡牌时全部计入）
+        # 这样训练样本里就会出现 redhead_bonus 的非零信号
         for seat in self.seats:
+            seat.redhead_pool = [self.wall.pop() for _ in range(2)]
             seat.hand = sorted(self.wall.pop() for _ in range(13))
             seat.discards = []
             seat.passed_hu_this_round = False
+            seat.grab_charge_caught = 0
         self.current_seat = 0
 
     # -- state bridging ------------------------------------------------- #
@@ -545,6 +593,72 @@ class SimulatedGame:
             return False
         return is_winning_hand(list(opp.hand) + [tile])
 
+    # 验收 (spec §3.2 抓冲): 按门风返回该 seat 的抓冲牌列表（display 名）
+    @staticmethod
+    def _grab_charge_tiles_for_wind(wind: Wind) -> List[str]:
+        if wind is Wind.EAST:
+            return ["east", "1w", "5w", "9w", "1t", "5t", "9t"]
+        if wind is Wind.SOUTH:
+            return ["south", "2w", "6w", "2t", "6t", "red"]  # red = 中
+        if wind is Wind.WEST:
+            return ["west", "3w", "7w", "3t", "7t", "green"]  # green = 发
+        if wind is Wind.NORTH:
+            return ["north", "4w", "8w", "4t", "8t", "white"]
+        return []
+
+    def _classify_hu_from_hand(self, hand: Sequence[str]) -> Tuple[bool, bool, bool]:
+        """Return (is_qingyise, is_hunyise, is_ziyise) from a winning hand.
+
+        Mirrors engine/share/linhai_score.cpp::classify_hu but using display tile codes.
+        White tiles count as wildcards but are excluded from suit detection.
+        """
+        non_white = [t for t in hand if t != WHITE]
+        has_man = has_pin = has_sou = has_honor = False
+        for tile in non_white:
+            desc = require_tile(tile)
+            if desc.suit is Suit.CHARACTERS:
+                has_man = True
+            elif desc.suit is Suit.BAMBOO:
+                has_pin = True  # 注：本仓库 BAMBOO 用 't' 后缀，命名上偏 sozu/tiao
+            elif desc.suit is Suit.HONOR:
+                has_honor = True
+        suit_count = (1 if has_man else 0) + (1 if has_pin else 0) + (1 if has_sou else 0)
+        is_ziyise = (suit_count == 0 and has_honor)
+        is_qingyise = (suit_count == 1 and not has_honor)
+        is_hunyise = (suit_count == 1 and has_honor)
+        return (is_qingyise, is_hunyise, is_ziyise)
+
+    def _make_win_result(self, *, winner_idx: int, loser_idx: Optional[int],
+                         kind: str, winning_hand: List[str],
+                         houjuu_seat: Optional[int] = None) -> GameResult:
+        is_qingyise, is_hunyise, is_ziyise = self._classify_hu_from_hand(winning_hand)
+        white_count = sum(1 for t in winning_hand if t == WHITE)
+        winner_seat = self.seats[winner_idx]
+        # 验收 (spec §3.2): 树掉还原触发条件 = 白板暗刻 + has_tree_active
+        has_tree_active = (white_count >= 3)
+        # 抓冲数：本局赢家在自己的抓冲牌列表里出现的张数（手中 + 副露）
+        grab_charge_tiles = set(self._grab_charge_tiles_for_wind(winner_seat.wind))
+        grab_charge_caught = sum(
+            1 for t in winning_hand if t in grab_charge_tiles
+        )
+        # 红头：本局赢家从 redhead_pool 里"翻出"的红头牌（简化为开局发的池子）
+        redhead_caught = list(winner_seat.redhead_pool)
+        return GameResult(
+            winner=winner_idx,
+            loser=loser_idx,
+            kind=kind,
+            turns=0,
+            houjuu_seat=houjuu_seat,
+            winning_hand=list(winning_hand),
+            winning_white_count=white_count,
+            is_qingyise=is_qingyise,
+            is_hunyise=is_hunyise,
+            is_ziyise=is_ziyise,
+            has_tree_active=has_tree_active,
+            grab_charge_caught=grab_charge_caught,
+            redhead_caught=redhead_caught,
+        )
+
     def play_one_turn(self) -> Optional[GameResult]:
         seat_idx = self.current_seat
         seat = self.seats[seat_idx]
@@ -555,7 +669,10 @@ class SimulatedGame:
 
         # Tsumo check
         if is_winning_hand(seat.hand):
-            return GameResult(winner=seat_idx, loser=None, kind="tsumo", turns=0)
+            return self._make_win_result(
+                winner_idx=seat_idx, loser_idx=None, kind="tsumo",
+                winning_hand=list(seat.hand),
+            )
 
         decision = self.policies[seat_idx].choose_discard(self, seat_idx)
         if decision.tile not in seat.hand:
@@ -574,11 +691,15 @@ class SimulatedGame:
             except Exception:
                 take_ron = True
             if take_ron:
-                return GameResult(
-                    winner=1 - seat_idx,
-                    loser=seat_idx,
+                opp_idx = 1 - seat_idx
+                opp = self.seats[opp_idx]
+                # 胜者手牌 = 对手当前手牌 + 放炮牌
+                winning_hand = list(opp.hand) + [decision.tile]
+                return self._make_win_result(
+                    winner_idx=opp_idx,
+                    loser_idx=seat_idx,
                     kind="ron",
-                    turns=0,
+                    winning_hand=winning_hand,
                     houjuu_seat=seat_idx,
                 )
             self.seats[1 - seat_idx].passed_hu_this_round = True
@@ -675,6 +796,91 @@ class MatchStats:
             "avg_turns": statistics.fmean(self.turns) if self.turns else 0.0,
             "median_turns": statistics.median(self.turns) if self.turns else 0.0,
         }
+
+
+def chong_for_seat(result: GameResult, seat_idx: int) -> int:
+    """Return signed chong (积分) for `seat_idx` given the game result.
+
+    Uses backend.app.services.score_calculator with the simplified selfplay
+    rules (no grab_charge/contract/redhead — those don't apply in this 2-player
+    test harness).
+    """
+    from backend.app.services.score_calculator import calc_score_from_game_event
+
+    if result.kind == "draw" or result.winner is None:
+        return 0
+    # spec §3.2 / Task P0-2: 把番数引擎能识别的所有特殊条款都接出去。
+    # mjai-style code mapping：score_calculator 的 redhead_table 用 mjai 名
+    # （1m/9m/E/S/W/N/P/F/C），simulated game 用 display 名（1w/9w/east/.../white）。
+    redhead_mjai = []
+    for tile in (result.redhead_caught or []):
+        m = (tile.replace("w", "m").replace("t", "s")
+             if tile not in {"east", "south", "west", "north",
+                             "white", "green", "red"}
+             else {"east": "E", "south": "S", "west": "W", "north": "N",
+                   "white": "P", "green": "F", "red": "C"}[tile])
+        redhead_mjai.append(m)
+    event = {
+        "is_hu": True,
+        "is_tsumo": result.kind == "tsumo",
+        "is_qiang_gang": False,
+        "has_tree_active": result.has_tree_active,
+        "white_count_in_hand": result.winning_white_count,
+        "white_count_in_melds": 0,
+        "is_qingyise": result.is_qingyise,
+        "is_hunyise": result.is_hunyise,
+        "is_ziyise": result.is_ziyise,
+        "redhead_caught": redhead_mjai,
+        "grab_charge_caught": result.grab_charge_caught,
+        "contract_active": False,
+    }
+    if seat_idx == result.winner:
+        return calc_score_from_game_event(event, role="winner")
+    if result.kind == "ron" and seat_idx == result.loser:
+        return calc_score_from_game_event(event, role="loser")
+    # Tsumo: non-winner pays equal share of winner's score.
+    if result.kind == "tsumo" and seat_idx != result.winner:
+        return -calc_score_from_game_event(event, role="winner")
+    return 0
+
+
+def run_match_with_per_game_chong(
+    policy_a: Policy,
+    policy_b: Policy,
+    games: int,
+    *,
+    seed: int = 0,
+    swap_sides: bool = True,
+    max_turns: int = 200,
+) -> Tuple[List[int], List[int], "MatchStats"]:
+    """Like run_match but also returns per-game chong for both seats.
+
+    Returns (chongs_a, chongs_b, stats). Length of each chong list == games.
+    Sign is from the perspective of the corresponding policy (positive if won).
+    """
+    stats = MatchStats()
+    chongs_a: List[int] = []
+    chongs_b: List[int] = []
+    for i in range(games):
+        rng = random.Random(seed + i)
+        swap = swap_sides and (i % 2 == 1)
+        if swap:
+            policies: List[Policy] = [policy_b, policy_a]
+        else:
+            policies = [policy_a, policy_b]
+        game = SimulatedGame(policies, rng, max_turns=max_turns)
+        result = game.run()
+        stats.record(result, swap)
+        c0 = chong_for_seat(result, 0)
+        c1 = chong_for_seat(result, 1)
+        if swap:
+            # seat 0 was policy_b, seat 1 was policy_a
+            chongs_a.append(c1)
+            chongs_b.append(c0)
+        else:
+            chongs_a.append(c0)
+            chongs_b.append(c1)
+    return chongs_a, chongs_b, stats
 
 
 def run_match(

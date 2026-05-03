@@ -119,6 +119,7 @@ ext_modules = [
             "share/linhai_risk.cpp",
             "share/linhai_bonus.cpp",
             "share/linhai_grab_charge.cpp",
+            "share/linhai_score.cpp",
             "share/linhai_rules.cpp",
             "share/linhai_shanten_v4.cpp",
             "share/calc_shanten.cpp",

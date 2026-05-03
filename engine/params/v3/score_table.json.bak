@@ -1,0 +1,64 @@
+{
+  "version": "1.0.0",
+  "created_at": "2026-04-28",
+  "description": "临海麻将番数与积分参数表，对应 docs/superpowers/specs/2026-04-28-linhai-v3-acceptance-design.md §3。tile code 用 mjai 风格（1m..9m/1p..9p/1s..9s/E/S/W/N/P=白/F=发/C=中），与 engine/share/types.cpp::hai_str_to_int 对齐。",
+  "chong_to_score": 1,
+  "base_chong": {
+    "ordinary": 1,
+    "qingyise": 8,
+    "ziyise": 8,
+    "hunyise_with_tree": 2,
+    "hunyise_hard": 4
+  },
+  "multipliers": {
+    "hard_collision": 2,
+    "special_tile": 2,
+    "tree_restore_white_anko": 4
+  },
+  "bonuses": {
+    "qianggang_hu": 2,
+    "grab_charge_per_tile": 1
+  },
+  "redhead": {
+    "per_player_count_default": 2,
+    "tile_to_chong": {
+      "1m": 1, "2m": 2, "3m": 3, "4m": 4, "5m": 5, "6m": 6, "7m": 7, "8m": 8, "9m": 9,
+      "E": 5, "S": 5, "W": 5, "N": 5,
+      "P": 5, "F": 5, "C": 5
+    }
+  },
+  "contract": {
+    "split_ratio": [0.5, 0.5],
+    "target_count_default": 3
+  },
+  "liuju": {
+    "remaining_default": 6
+  },
+  "cap": {
+    "max_base_chong": 8,
+    "extra_chong_uncapped": true
+  },
+  "ev_risk_weights": {
+    "lambda_base": 1.5,
+    "lambda_pressure_step": 0.5,
+    "lambda_max": 3.0,
+    "mu_base": 2.0,
+    "mu_pressure_step": 0.5,
+    "mu_max": 5.0,
+    "houjuu_base_coeff": 5500.0,
+    "high_chong_threshold": 4.0,
+    "_comment": "Phase A spec §3.5.1: 风险厌恶 EV 重加权。lambda 越大对放炮越敏感，mu 针对对手 ≥4 冲长尾失分。pressure_step 表示 opp_pressure_score 每升 1 单位 lambda/mu 的累加量。"
+  },
+  "betaori_thresholds": {
+    "base": 0.15,
+    "meld_drop": 0.03,
+    "qingyise_drop": 0.05,
+    "ev_loss_multiplier": 1.5,
+    "_comment": "Phase A spec §3.5.2: betaori 动态阈值。houjuu_prob > 实时阈值时强制最低 houjuu 弃牌。"
+  },
+  "feature_weights": {
+    "opp_meld_pressure_alpha": 1.0,
+    "opp_qingyise_alarm_alpha": 1.0,
+    "_comment": "Phase A spec §3.5.3: 高价值防守特征对 EV 的手写权重，作为 Phase B 训练前的先验。"
+  }
+}
