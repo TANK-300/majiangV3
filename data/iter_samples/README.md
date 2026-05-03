@@ -12,16 +12,18 @@
 ## 下载样本
 
 ```bash
-pip install -U "huggingface_hub[cli]"
+python3 -m pip install -U "huggingface_hub[cli]"
 
 # 登录（一次即可，token 在 https://huggingface.co/settings/tokens 申请，read 权限够用）
-huggingface-cli login
+hf auth login
 
 # 下载到当前位置
-huggingface-cli download <YOUR_HF_USERNAME>/majiangv3-iter-samples \
+hf download <YOUR_HF_USERNAME>/majiangv3-iter-samples \
   --repo-type dataset \
   --local-dir data/iter_samples
 ```
+
+> 注：`huggingface_hub>=1.0` 起 CLI 命令从 `huggingface-cli` 改为 `hf`。
 
 ## 文件清单
 
