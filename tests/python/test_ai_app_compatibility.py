@@ -364,6 +364,39 @@ def test_2p_adapter_missing_suit_alias_accepted() -> None:
         assert r.json()["tile"].endswith("w"), f"alias={alias} 未生效: {r.json()['tile']}"
 
 
+def test_2p_adapter_genbutsu_bonus_promotes_safe_tile() -> None:
+    """对手已经打过的牌（现物）应被 adapter 加分；同等候选时优先打安全牌。"""
+    base_payload = {
+        "hand": ["1w", "2w", "3w", "4w", "5w", "6w", "1t", "2t", "3t", "4t", "5t", "6t", "7t"],
+        "wind_seat": 0,
+        "wall_remaining": 50,
+    }
+    r1 = client.post("/ai/recommend", json=base_payload)
+    assert r1.status_code == 200, r1.text
+    base_tile = r1.json()["tile"]
+
+    # 带 opponent_discards 含基线推荐牌：该牌 EV 应被显著抬高
+    r2 = client.post("/ai/recommend", json={**base_payload, "opponent_discards": [base_tile]})
+    assert r2.status_code == 200, r2.text
+    s2 = r2.json()["meta"]["scores"].get(base_tile, 0)
+    s1 = r1.json()["meta"]["scores"].get(base_tile, 0)
+    assert s2 > s1, f"genbutsu bonus 未生效: base={s1}, with_opp_discard={s2}"
+
+
+def test_2p_adapter_betaori_picks_safe_tile_late_game() -> None:
+    """晚牌山 + 高 shanten + 有安全牌 → adapter 进 betaori，必须打安全牌。"""
+    payload = {
+        "hand": ["1w", "9w", "1t", "9t", "east", "south", "west", "north", "white", "green", "red", "2w", "8w"],
+        "wind_seat": 0,
+        "wall_remaining": 10,  # 晚牌山
+        "opponent_discards": ["green"],  # green 是绝对安全牌
+    }
+    r = client.post("/ai/recommend", json=payload)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["tile"] == "green", f"betaori 未生效: tile={body['tile']}, shanten={body.get('shanten')}, scores={body['meta']['scores']}"
+
+
 def test_passed_hu_flag_propagates() -> None:
     # When the seat already passed hu this round, the engine must not
     # recommend 'hu'. This flag flows through to v3 / heuristic.
