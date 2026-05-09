@@ -26,6 +26,19 @@ from ..core.state import GameState, Meld, PlayerState, Wind
 from ..core.tiles import normalize_code
 from ..services.orchestrator import get_orchestrator
 
+
+# 副露类型白名单（与 v3_service / v2_fallback 消费侧 meld.type 字符串一致）
+_MELD_TYPES = {"chi", "peng", "ming_gang", "an_gang", "bu_gang"}
+# 兼容前端可能用的别名
+_MELD_TYPE_ALIAS: Dict[str, str] = {
+    "chii": "chi", "pon": "peng", "kan": "ming_gang",
+    "minkan": "ming_gang", "ankan": "an_gang", "kakan": "bu_gang",
+    "ming_kan": "ming_gang", "an_kan": "an_gang", "bu_kan": "bu_gang",
+    # 中文/拼音别名
+    "吾": "peng", "碰": "peng", "吃": "chi",
+    "明杠": "ming_gang", "暗杠": "an_gang", "补杠": "bu_gang",
+}
+
 router = APIRouter(prefix="/ai", tags=["AI"])
 
 
@@ -119,7 +132,7 @@ def _coerce_wind_seat(raw) -> Optional[int]:
 # "guo" is the pinyin for 过 (pass); everything else is pass-through.
 _ACTION_ALIAS: Dict[str, str] = {
     "guo": "pass",
-    "\u8fc7": "pass",
+    "过": "pass",
     "skip": "pass",
     "none": "pass",
 }
@@ -172,12 +185,16 @@ def _legacy_translate(values):
         values["available_actions"] = _normalize_actions(values["action_buttons"])
     # `opponent_discards` and `discards` are kept and exposed as first-class
     # fields so the engine can use the opponent's river (risk / defense
-    # features benefit from this). Other legacy fields are harmless metadata
-    # and can be quietly dropped to avoid extra="allow" noise.
+    # features benefit from this). `melds` / `opponent_melds` are now also
+    # first-class — keep them so副露信息能进 V3 search。Other legacy fields
+    # are harmless metadata and can be quietly dropped.
+    # opp_melds -> opponent_melds 别名
+    if "opponent_melds" not in values and "opp_melds" in values:
+        values["opponent_melds"] = values.get("opp_melds")
     for legacy_key in (
-        "melds", "dora_indicators",
+        "dora_indicators",
         "latest_action_kind", "action_buttons", "game_id", "record_data",
-        "player_wind", "seat", "wind",
+        "player_wind", "seat", "wind", "opp_melds",
     ):
         values.pop(legacy_key, None)
     return values
@@ -187,29 +204,64 @@ def _legacy_translate(values):
 
 
 class OpponentState(BaseModel):
-    wind_seat: int = Field(..., ge=0, le=3, description="\u98ce\u4f4d (0=\u4e1c, 1=\u5357, 2=\u897f, 3=\u5317)")
-    reach: bool = Field(default=False, description="\u662f\u5426\u7acb\u76f4")
-    melds_count: int = Field(default=0, ge=0, le=4, description="\u526f\u9732\u6570\u91cf")
+    wind_seat: int = Field(..., ge=0, le=3, description="风位 (0=东, 1=南, 2=西, 3=北)")
+    reach: bool = Field(default=False, description="是否立直")
+    melds_count: int = Field(default=0, ge=0, le=4, description="副露数量")
 
 
 class ChiPonRecord(BaseModel):
-    type: str = Field(..., description="\u7c7b\u578b: chi \u6216 pon")
-    target_player: int = Field(..., ge=0, le=3, description="\u76ee\u6807\u73a9\u5bb6")
+    type: str = Field(..., description="类型: chi 或 pon")
+    target_player: int = Field(..., ge=0, le=3, description="目标玩家")
+
+
+class MeldInput(BaseModel):
+    """副露输入。与 core.state.Meld(type, tiles) 一致，额外允许一个可选 from_player 提示对手座位。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    type: str = Field(..., description="chi/peng/ming_gang/an_gang/bu_gang")
+    tiles: List[str] = Field(..., min_length=1, max_length=4, description="副露牌列表")
+    from_player: Optional[int] = Field(default=None, ge=0, le=3, description="被吾玩家座位（可选）")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy(cls, values):
+        if not isinstance(values, dict):
+            return values
+        # 兼容字段名：kind -> type；consumed/pai -> tiles
+        if "type" not in values and "kind" in values:
+            values["type"] = values["kind"]
+        if "tiles" not in values:
+            for alt in ("consumed", "pai", "hai"):
+                if alt in values:
+                    values["tiles"] = values[alt]
+                    break
+        # 类型别名归一
+        raw_type = values.get("type")
+        if isinstance(raw_type, str):
+            t = raw_type.strip().lower()
+            values["type"] = _MELD_TYPE_ALIAS.get(t, t)
+        return values
 
 
 class AIRecommendRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    hand: List[str] = Field(..., min_length=13, max_length=14, description="\u624b\u724c\u5217\u8868")
-    wind_seat: int = Field(..., ge=0, le=3, description="\u98ce\u4f4d")
-    has_kan: bool = Field(default=False, description="\u662f\u5426\u6709\u6760")
-    wall_remaining: int = Field(default=70, ge=0, le=136, description="\u5269\u4f59\u724c\u5899\u6570\u91cf")
-    round_number: int = Field(default=0, ge=0, description="\u5c40\u6570")
+    hand: List[str] = Field(..., min_length=13, max_length=14, description="手牌列表")
+    wind_seat: int = Field(..., ge=0, le=3, description="风位")
+    has_kan: bool = Field(default=False, description="是否有杠")
+    wall_remaining: int = Field(default=70, ge=0, le=136, description="剩余牌墙数量")
+    round_number: int = Field(default=0, ge=0, description="局数")
     opponents_state: Optional[List[OpponentState]] = Field(default=None)
     chi_pon_history: Optional[List[ChiPonRecord]] = Field(default=None)
     strategy: str = Field(default="balanced", description="balanced/aggressive/defensive")
-    discards: Optional[List[str]] = Field(default=None, description="\u81ea\u5bb6\u724c\u6cb3")
-    opponent_discards: Optional[List[str]] = Field(default=None, description="\u5bf9\u624b\u724c\u6cb3")
+    discards: Optional[List[str]] = Field(default=None, description="自家牌河")
+    opponent_discards: Optional[List[str]] = Field(default=None, description="对手牌河")
+    melds: Optional[List[MeldInput]] = Field(default=None, description="自家副露")
+    opponent_melds: Optional[List[MeldInput]] = Field(default=None, description="对手副露")
+    mode: Optional[str] = Field(default=None, description="玩法模式，如 'linhai_2p'")
+    missing_suit_self: Optional[str] = Field(default=None, description="自家缺一门: w/t/z 或别名")
+    missing_suit_opp: Optional[str] = Field(default=None, description="对手缺一门")
 
     @model_validator(mode="before")
     @classmethod
@@ -233,6 +285,11 @@ class AIAllRecommendationsRequest(BaseModel):
     round_number: int = Field(default=0, ge=0)
     discards: Optional[List[str]] = Field(default=None)
     opponent_discards: Optional[List[str]] = Field(default=None)
+    melds: Optional[List[MeldInput]] = Field(default=None)
+    opponent_melds: Optional[List[MeldInput]] = Field(default=None)
+    mode: Optional[str] = Field(default=None)
+    missing_suit_self: Optional[str] = Field(default=None)
+    missing_suit_opp: Optional[str] = Field(default=None)
 
     @model_validator(mode="before")
     @classmethod
@@ -251,20 +308,22 @@ class AIResponseRequest(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    hand: List[str] = Field(..., min_length=0, max_length=14, description="\u624b\u724c")
+    hand: List[str] = Field(..., min_length=0, max_length=14, description="手牌")
     wind_seat: int = Field(..., ge=0, le=3)
-    discarded_tile: str = Field(..., description="\u6700\u540e\u88ab\u6253\u51fa\u7684\u724c")
-    from_player: int = Field(..., ge=0, le=3, description="\u6253\u724c\u4eba\u7684\u98ce\u4f4d")
+    discarded_tile: str = Field(..., description="最后被打出的牌")
+    from_player: int = Field(..., ge=0, le=3, description="打牌人的风位")
     available_actions: List[str] = Field(
         default_factory=lambda: ["pass"],
-        description="\u5141\u8bb8\u7684\u54cd\u5e94\u52a8\u4f5c\u5217\u8868: pass/peng/chi/gang/hu",
+        description="允许的响应动作列表: pass/peng/chi/gang/hu",
     )
     wall_remaining: int = Field(default=70, ge=0, le=136)
     round_number: int = Field(default=0, ge=0)
     opponents_state: Optional[List[OpponentState]] = Field(default=None)
-    passed_hu_this_round: bool = Field(default=False, description="\u672c\u5c40\u5df2\u7ecf\u8fc7\u80e1")
+    passed_hu_this_round: bool = Field(default=False, description="本局已经过胡")
     discards: Optional[List[str]] = Field(default=None)
     opponent_discards: Optional[List[str]] = Field(default=None)
+    melds: Optional[List[MeldInput]] = Field(default=None)
+    opponent_melds: Optional[List[MeldInput]] = Field(default=None)
 
     @model_validator(mode="before")
     @classmethod
@@ -296,6 +355,32 @@ def _confidence_from_shanten(shanten: Optional[int]) -> float:
     return 0.7
 
 
+def _meld_input_to_meld(m: "MeldInput") -> Optional[Meld]:
+    """将路由层的 MeldInput 转成 core.state.Meld，不合法的跳过。"""
+    raw_type = (m.type or "").strip().lower()
+    meld_type = _MELD_TYPE_ALIAS.get(raw_type, raw_type)
+    if meld_type not in _MELD_TYPES:
+        return None
+    try:
+        canonical_tiles = [_canonical_tile(t) for t in m.tiles]
+    except HTTPException:
+        return None
+    if not canonical_tiles:
+        return None
+    return Meld(tiles=canonical_tiles, type=meld_type)
+
+
+def _normalize_meld_list(raw: Optional[List["MeldInput"]]) -> List[Meld]:
+    if not raw:
+        return []
+    out: List[Meld] = []
+    for item in raw:
+        meld = _meld_input_to_meld(item)
+        if meld is not None:
+            out.append(meld)
+    return out
+
+
 def _build_state(
     hand: List[str],
     wind_seat: int,
@@ -304,6 +389,8 @@ def _build_state(
     opponents_state: Optional[List[OpponentState]] = None,
     passed_hu_this_round: bool = False,
     opponent_discards_per_seat: Optional[Dict[int, List[str]]] = None,
+    own_melds: Optional[List[Meld]] = None,
+    opponent_melds_per_seat: Optional[Dict[int, List[Meld]]] = None,
 ) -> GameState:
     my_wind = _wind_of(wind_seat)
     my_hand = [_canonical_tile(tile) for tile in hand]
@@ -312,18 +399,22 @@ def _build_state(
         my_wind: PlayerState(
             wind=my_wind,
             hand=my_hand,
+            melds=list(own_melds or []),
             discards=[_canonical_tile(t) for t in (opponent_discards_per_seat or {}).get(wind_seat, [])],
         )
     }
     for seat_idx, wind in enumerate(_WIND_ORDER):
         if wind is my_wind:
             continue
-        discards = []
+        discards: List[str] = []
         if opponent_discards_per_seat:
             raw = opponent_discards_per_seat.get(seat_idx)
             if raw:
                 discards = [_canonical_tile(t) for t in raw]
-        players[wind] = PlayerState(wind=wind, hand=[], discards=discards)
+        melds: List[Meld] = []
+        if opponent_melds_per_seat:
+            melds = list(opponent_melds_per_seat.get(seat_idx) or [])
+        players[wind] = PlayerState(wind=wind, hand=[], melds=melds, discards=discards)
 
     state = GameState(
         round_wind=Wind.EAST,
@@ -383,11 +474,11 @@ def _map_candidate_scores_for_app(candidate_scores) -> Dict[str, float]:
 def _discard_explanation(tile: str, agari_prob: float, houjuu_prob: float, chosen_by: str) -> str:
     bits = [chosen_by] if chosen_by else []
     if tile:
-        bits.append(f"\u6253{tile}")
+        bits.append(f"打{tile}")
     if agari_prob > 0:
-        bits.append(f"\u548c\u724c\u6982\u7387 {agari_prob:.1%}")
+        bits.append(f"和牌概率 {agari_prob:.1%}")
     if houjuu_prob > 0.01:
-        bits.append(f"\u653e\u70ae\u6982\u7387 {houjuu_prob:.1%}")
+        bits.append(f"放炮概率 {houjuu_prob:.1%}")
     return ", ".join(bit for bit in bits if bit) or "v3 recommendation"
 
 
@@ -549,6 +640,32 @@ def _opponent_discards_map(
     return mapping
 
 
+def _opponent_melds_map(
+    wind_seat: int,
+    opp_melds_input: Optional[List["MeldInput"]],
+    opp_seat_hint: Optional[int] = None,
+) -> Dict[int, List[Meld]]:
+    """将平哈列表的对手副露分配到座位：优先用 MeldInput.from_player，
+    其次用 opp_seat_hint，最后退化到第一个非本座位。"""
+    if not opp_melds_input:
+        return {}
+    fallback_seat = next((s for s in range(4) if s != int(wind_seat)), 1)
+    if opp_seat_hint is not None and int(opp_seat_hint) != int(wind_seat):
+        fallback_seat = int(opp_seat_hint)
+    mapping: Dict[int, List[Meld]] = {}
+    for raw in opp_melds_input:
+        meld = _meld_input_to_meld(raw)
+        if meld is None:
+            continue
+        seat = (
+            int(raw.from_player)
+            if raw.from_player is not None and 0 <= int(raw.from_player) <= 3 and int(raw.from_player) != int(wind_seat)
+            else fallback_seat
+        )
+        mapping.setdefault(seat, []).append(meld)
+    return mapping
+
+
 @router.post("/recommend")
 def recommend_discard(request: AIRecommendRequest) -> Dict:
     """Best discard recommendation.
@@ -569,13 +686,22 @@ def recommend_discard(request: AIRecommendRequest) -> Dict:
             opponent_discards_per_seat=_opponent_discards_map(
                 request.wind_seat, request.discards, request.opponent_discards
             ),
+            own_melds=_normalize_meld_list(request.melds),
+            opponent_melds_per_seat=_opponent_melds_map(
+                request.wind_seat, request.opponent_melds
+            ),
         )
-        result = get_orchestrator().recommend(state)
+        result = get_orchestrator().recommend(
+            state,
+            mode=request.mode,
+            missing_suit_self=request.missing_suit_self,
+            missing_suit_opp=request.missing_suit_opp,
+        )
         return _shape_discard(result)
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"AI\u63a8\u8350\u5931\u8d25: {exc}")
+        raise HTTPException(status_code=500, detail=f"AI推荐失败: {exc}")
 
 
 @router.post("/recommend-response")
@@ -604,6 +730,10 @@ def recommend_response(request: AIResponseRequest) -> Dict:
             opponents_state=request.opponents_state,
             passed_hu_this_round=request.passed_hu_this_round,
             opponent_discards_per_seat=discard_map,
+            own_melds=_normalize_meld_list(request.melds),
+            opponent_melds_per_seat=_opponent_melds_map(
+                request.wind_seat, request.opponent_melds, opp_seat_hint=request.from_player
+            ),
         )
         discarded = _canonical_tile(request.discarded_tile)
         actions = [action.strip().lower() for action in request.available_actions if action.strip()]
@@ -616,7 +746,7 @@ def recommend_response(request: AIResponseRequest) -> Dict:
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"AI\u54cd\u5e94\u63a8\u8350\u5931\u8d25: {exc}")
+        raise HTTPException(status_code=500, detail=f"AI响应推荐失败: {exc}")
 
 
 @router.post("/recommend-all")
@@ -633,8 +763,17 @@ def recommend_all(request: AIAllRecommendationsRequest) -> Dict:
             opponent_discards_per_seat=_opponent_discards_map(
                 request.wind_seat, request.discards, request.opponent_discards
             ),
+            own_melds=_normalize_meld_list(request.melds),
+            opponent_melds_per_seat=_opponent_melds_map(
+                request.wind_seat, request.opponent_melds
+            ),
         )
-        result = get_orchestrator().recommend(state)
+        result = get_orchestrator().recommend(
+            state,
+            mode=request.mode,
+            missing_suit_self=request.missing_suit_self,
+            missing_suit_opp=request.missing_suit_opp,
+        )
         ranked = []
         for tile, score in (result.get("candidate_scores") or {}).items():
             if not isinstance(score, (int, float)):
@@ -650,7 +789,7 @@ def recommend_all(request: AIAllRecommendationsRequest) -> Dict:
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"\u83b7\u53d6\u63a8\u8350\u5931\u8d25: {exc}")
+        raise HTTPException(status_code=500, detail=f"获取推荐失败: {exc}")
 
 
 @router.post("/reset")
@@ -674,9 +813,9 @@ def ai_health() -> Dict:
         return {
             "success": True,
             "status": "healthy",
-            "message": "AI\u5f15\u64ce\u8fd0\u884c\u6b63\u5e38",
+            "message": "AI引擎运行正常",
             "test_result": {"tile": result.get("tile"), "shanten": result.get("shanten", 0)},
             "engine_status": status,
         }
     except Exception as exc:  # noqa: BLE001
-        return {"success": False, "status": "unhealthy", "message": f"AI\u5f15\u64ce\u5f02\u5e38: {exc}"}
+        return {"success": False, "status": "unhealthy", "message": f"AI引擎异常: {exc}"}

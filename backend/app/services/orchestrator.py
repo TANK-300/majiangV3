@@ -4,6 +4,7 @@ from typing import Dict, List, Optional
 
 from ..core.state import GameState
 from .strategy_fallback import StrategyFallbackService
+from .two_player_adapter import adjust_for_2p_linhai
 from .v2_fallback import V2FallbackAdapter
 from .v3_service import V3SearchService
 
@@ -34,13 +35,39 @@ class LinhaiV3Orchestrator:
             "heuristic_available": True,
         }
 
-    def recommend(self, state: GameState) -> Dict:
+    def recommend(
+        self,
+        state: GameState,
+        *,
+        mode: Optional[str] = None,
+        missing_suit_self: Optional[str] = None,
+        missing_suit_opp: Optional[str] = None,
+    ) -> Dict:
+        """出牌推荐。
+
+        额外 kwargs（默认 None 不影响历史行为）：
+            mode: "linhai_2p" 强制启用二人后置适配；None 时适配器走启发式推断。
+            missing_suit_self: 自家缺一门（w / t / z 或别名）。
+            missing_suit_opp: 对手缺一门。
+        """
         v3_result = self.v3.recommend_discard(state)
         if v3_result is not None:
-            return v3_result
+            return adjust_for_2p_linhai(
+                v3_result,
+                state,
+                mode=mode,
+                missing_suit_self=missing_suit_self,
+                missing_suit_opp=missing_suit_opp,
+            )
         v2_result = self.v2.recommend_discard(state)
         if v2_result is not None:
-            return v2_result
+            return adjust_for_2p_linhai(
+                v2_result,
+                state,
+                mode=mode,
+                missing_suit_self=missing_suit_self,
+                missing_suit_opp=missing_suit_opp,
+            )
         return self.strategy.recommend_discard(state)
 
     def recommend_response(

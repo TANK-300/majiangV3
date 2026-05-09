@@ -4,6 +4,7 @@ import hashlib
 import importlib
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -68,6 +69,10 @@ class V3SearchService:
         self._load_reason: str = "not_attempted"
         self._module_dir: Optional[Path] = None
         self._params_dir: Optional[Path] = None
+        # 引擎单例 + 内部 unordered_map 缓存非线程安全，pybind11 调用默认持 GIL
+        # 但仍可能在 GIL 释放点之间被并发请求踩到。RLock 保证 recommend_*
+        # 串行进入 C++，避免 cache 竞态导致挂死或返回串扰。
+        self._engine_lock = threading.RLock()
         self._load()
 
     def available(self) -> bool:
@@ -207,8 +212,18 @@ class V3SearchService:
             Wind.NORTH: 3,
         }.get(wind, 0)
 
+    # mjai 字牌缩写 -> linhai canonical 名。后置 adapter 用 normalize_code()
+    # 检索手牌，需要 candidate_scores 的 key 也是 canonical。
+    _HONOR_FROM_MJAI: Dict[str, str] = {
+        "E": "east", "S": "south", "W": "west", "N": "north",
+        "P": "white", "F": "green", "C": "red",
+    }
+
     @staticmethod
     def _display_tile(tile: str) -> str:
+        canonical = V3SearchService._HONOR_FROM_MJAI.get(tile)
+        if canonical is not None:
+            return canonical
         return tile.replace("m", "w").replace("s", "t")
 
     @staticmethod
@@ -315,8 +330,9 @@ class V3SearchService:
         if not self.available():
             return None
         try:
-            canonical = self._build_canonical_state(state)
-            result = self._engine.recommend_discard_v3(canonical)
+            with self._engine_lock:
+                canonical = self._build_canonical_state(state)
+                result = self._engine.recommend_discard_v3(canonical)
             tile = self._display_tile(self._mod.tile_int_to_str(result.hai)) if result.hai else None
             return {
                 "engine": "v3",
@@ -324,8 +340,10 @@ class V3SearchService:
                 "action": result.action,
                 "tile": tile,
                 "candidate_scores": {
+                    # 切到 15 让二人模式后置 adapter 能看到所有手牌候选（linhai
+                    # 一手最多 14 种花色），否则字牌惩罚找不到目标牌。
                     self._display_tile(self._mod.tile_int_to_str(item.hai)): round(item.total_ev, 3)
-                    for item in result.candidate_scores[:5]
+                    for item in result.candidate_scores[:15]
                     if item.hai
                 },
                 "total_ev": round(result.total_ev, 3),
@@ -361,8 +379,9 @@ class V3SearchService:
         if not self.available():
             return None
         try:
-            canonical = self._build_canonical_state(state, discarded_tile, from_player, action_buttons)
-            result = self._engine.recommend_response_v3(canonical)
+            with self._engine_lock:
+                canonical = self._build_canonical_state(state, discarded_tile, from_player, action_buttons)
+                result = self._engine.recommend_response_v3(canonical)
             tile = self._display_tile(self._mod.tile_int_to_str(result.hai)) if result.hai else None
             candidate_scores = {}
             for item in result.candidate_scores[:5]:

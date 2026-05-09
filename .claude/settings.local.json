@@ -64,7 +64,20 @@
       "Bash(LINHAI_V3_PARAMS_DIR=data/iter_params/R1 python3 tools/acceptance_25_8.py --games-per-seed 200 --seeds 1 2 3 4 5 --min-window-chong -1000 --min-avg-chong -1000 --max-houjuu-rate 1.0 --output docs/release/r1_eval_5seed.json)",
       "Bash(git rm *)",
       "Bash(pip install *)",
-      "Bash(command -v python3)"
+      "Bash(command -v python3)",
+      "Bash(/Users/fangyajun/CLionProjects/majiangV3/.venv/bin/python -c \"import pybind11; print\\(pybind11.__version__\\)\")",
+      "Bash(/Users/fangyajun/CLionProjects/majiangV3/.venv/bin/python -c \"import setuptools; print\\(setuptools.__version__\\)\")",
+      "Bash(/Users/fangyajun/CLionProjects/majiangV3/.venv/bin/pip install *)",
+      "Bash(/Users/fangyajun/CLionProjects/majiangV3/.venv/bin/python setup.py build_ext --inplace)",
+      "Bash(/Users/fangyajun/CLionProjects/majiangV3/.venv/bin/python *)",
+      "Bash(curl *)",
+      "Bash(.venv/bin/uvicorn backend.app.main:app *)",
+      "Bash(/Users/fangyajun/CLionProjects/majiangV3/.venv/bin/uvicorn backend.app.main:app *)",
+      "Bash(lsof -iTCP:8000 -sTCP:LISTEN)",
+      "Bash(.venv/bin/python -m pytest tests/python/test_ai_app_compatibility.py tests/python/test_engine_status_version.py -x -q)",
+      "Bash(.venv/bin/pip install *)",
+      "Bash(lsof -tiTCP:8000 -sTCP:LISTEN)",
+      "Bash(.venv/bin/python -m pytest tests/python/test_ai_app_compatibility.py tests/python/test_engine_status_version.py -q)"
     ]
   }
 }

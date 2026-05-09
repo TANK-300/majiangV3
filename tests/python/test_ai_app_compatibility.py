@@ -214,6 +214,156 @@ def test_ai_health_returns_test_tile() -> None:
     assert "engine_status" in body
 
 
+def test_ai_recommend_passes_own_melds_to_engine() -> None:
+    """同一 hand+路必须因为 melds 不同而产生不同 EV/防御评分，
+    以证明副露真的走到了 V3 引擎而不是被丢弃。"""
+    base = {
+        "hand": ["1w", "2w", "3w", "4w", "5w", "6w", "7w", "8w", "9w", "1t", "2t", "3t", "4t"],
+        "wind_seat": 0,
+        "wall_remaining": 40,
+    }
+    r1 = client.post("/ai/recommend", json=base)
+    r2 = client.post(
+        "/ai/recommend",
+        json={**base, "melds": [{"type": "peng", "tiles": ["green", "green", "green"]}]},
+    )
+    assert r1.status_code == 200 and r2.status_code == 200
+    s1 = r1.json().get("score")
+    s2 = r2.json().get("score")
+    assert isinstance(s1, (int, float)) and isinstance(s2, (int, float))
+    # 副露会改变实际手牌长度、完型距离与防御特征→ EV 必变化；若相等则代表被丢弃。
+    assert s1 != s2, f"melds passthrough failed: same EV {s1} vs {s2}"
+
+
+def test_ai_recommend_meld_type_aliases_accepted() -> None:
+    """前端可能使用日式别名 (pon/chii/kan)，路由层必须能归一。"""
+    payload = {
+        "hand": ["1w", "2w", "3w", "4w", "5w", "6w", "7w", "8w", "9w", "1t", "2t", "3t", "4t"],
+        "wind_seat": 0,
+        "wall_remaining": 40,
+        "melds": [
+            {"type": "pon", "tiles": ["green", "green", "green"]},  # 别名 -> peng
+        ],
+    }
+    r = client.post("/ai/recommend", json=payload)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["action"] == "discard"
+    assert body["tile"] in payload["hand"]
+
+
+def test_ai_recommend_unknown_meld_type_dropped_safely() -> None:
+    """未知 type 不该崩服务，只被静默跳过。"""
+    payload = {
+        "hand": ["1w", "2w", "3w", "4w", "5w", "6w", "7w", "8w", "9w", "1t", "2t", "3t", "4t"],
+        "wind_seat": 0,
+        "wall_remaining": 40,
+        "melds": [
+            {"type": "garbage_meld", "tiles": ["green", "green", "green"]},
+        ],
+    }
+    r = client.post("/ai/recommend", json=payload)
+    assert r.status_code == 200, r.text
+
+
+def test_ai_recommend_response_accepts_opponent_melds() -> None:
+    """响应推荐接受 opponent_melds + own melds 同时存在。"""
+    payload = {
+        "hand": ["1w", "2w", "3w", "4w", "5w", "6w", "7w", "8w", "9w", "1t", "2t"],
+        "wind": "east",
+        "discarded_tile": "green",
+        "from_player": 1,
+        "action_buttons": ["guo"],
+        "wall_remaining": 30,
+        "melds": [{"type": "peng", "tiles": ["red", "red", "red"]}],
+        "opponent_melds": [
+            {"type": "chi", "tiles": ["1t", "2t", "3t"], "from_player": 1},
+        ],
+    }
+    r = client.post("/ai/recommend-response", json=payload)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["success"] is True
+    assert body["recommended"] in {"pass", "peng", "chi", "gang", "hu"}
+
+
+def test_ai_recommend_response_opp_melds_legacy_alias() -> None:
+    """兼容旧名 opp_melds -> opponent_melds。"""
+    payload = {
+        "hand": ["1w", "2w", "3w", "4w", "5w", "6w", "7w", "8w", "9w", "1t", "2t"],
+        "wind_seat": 0,
+        "discarded_tile": "9w",
+        "from_player": 1,
+        "available_actions": ["pass"],
+        "wall_remaining": 30,
+        "opp_melds": [{"type": "peng", "tiles": ["red", "red", "red"]}],
+    }
+    r = client.post("/ai/recommend-response", json=payload)
+    assert r.status_code == 200, r.text
+
+
+def test_2p_adapter_promotes_lone_honor_for_discard() -> None:
+    """二人临海：字牌不是 yakuhai，孤张应优先打。
+
+    hand: 1w-6w + 1t-7t + east — east 是孤张字牌，优先打才能多听。
+    """
+    payload = {
+        "hand": ["1w", "2w", "3w", "4w", "5w", "6w", "1t", "2t", "3t", "4t", "5t", "6t", "7t", "east"],
+        "wind_seat": 0,
+        "wall_remaining": 50,
+        # 未带 mode → 启发式推断应识别为 2p（其他座位无牌河/副露）
+    }
+    r = client.post("/ai/recommend", json=payload)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["tile"] == "east", f"孤张 east 未被 adapter 提为 top: {body['tile']}, scores={body['meta']['scores']}"
+
+
+def test_2p_adapter_explicit_mode_lowers_houjuu() -> None:
+    """mode=linhai_2p 时 houjuu_prob 应被折低（0.4 倍）。"""
+    payload = {
+        "hand": ["1w", "2w", "3w", "4w", "5w", "6w", "1t", "2t", "3t", "4t", "5t", "6t", "7t", "east"],
+        "wind_seat": 0,
+        "wall_remaining": 50,
+        "mode": "linhai_2p",
+    }
+    r = client.post("/ai/recommend", json=payload)
+    assert r.status_code == 200, r.text
+    h = r.json()["houjuu_prob"]
+    # 原始 4p 估计通常 0.2-0.3，折后应 < 0.15。
+    assert h < 0.15, f"linhai_2p 未调低放炮率: {h}"
+
+
+def test_2p_adapter_missing_suit_self_forces_discard() -> None:
+    """缺一门：该门牌必须被 adapter 发上优先。"""
+    base = {
+        "hand": ["1w", "2w", "3w", "4w", "5w", "6w", "1t", "2t", "3t", "4t", "5t", "6t", "7t", "east"],
+        "wind_seat": 0,
+        "wall_remaining": 50,
+    }
+    # 缺万 → 推万牌
+    r = client.post("/ai/recommend", json={**base, "missing_suit_self": "w"})
+    assert r.status_code == 200
+    assert r.json()["tile"].endswith("w"), f"缺万但未推万: {r.json()['tile']}"
+    # 缺字 → 推字牌
+    r = client.post("/ai/recommend", json={**base, "missing_suit_self": "z"})
+    assert r.status_code == 200
+    assert r.json()["tile"] in {"east", "south", "west", "north", "white", "green", "red"}
+
+
+def test_2p_adapter_missing_suit_alias_accepted() -> None:
+    """missing_suit 接受别名 wan/万/m 等。"""
+    base = {
+        "hand": ["1w", "2w", "3w", "4w", "5w", "6w", "1t", "2t", "3t", "4t", "5t", "6t", "7t", "east"],
+        "wind_seat": 0,
+        "wall_remaining": 50,
+    }
+    for alias in ("wan", "万", "m"):
+        r = client.post("/ai/recommend", json={**base, "missing_suit_self": alias})
+        assert r.status_code == 200, r.text
+        assert r.json()["tile"].endswith("w"), f"alias={alias} 未生效: {r.json()['tile']}"
+
+
 def test_passed_hu_flag_propagates() -> None:
     # When the seat already passed hu this round, the engine must not
     # recommend 'hu'. This flag flows through to v3 / heuristic.
