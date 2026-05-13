@@ -1,12 +1,25 @@
 from __future__ import annotations
 
+import os
 from typing import Dict, List, Optional
 
 from ..core.state import GameState
 from .strategy_fallback import StrategyFallbackService
-from .two_player_adapter import adjust_for_2p_linhai
+from .two_player_adapter import adjust_for_2p_linhai, rebalance_for_2p_houjuu
 from .v2_fallback import V2FallbackAdapter
 from .v3_service import V3SearchService
+
+
+def _rebalance_factor() -> float:
+    """读取环境变量 `LINHAI_V3_REBALANCE_FACTOR`，>0 启用 #4 EV 重平衡。
+    默认 0（不影响生产 / 既有测试）。"""
+    raw = os.environ.get("LINHAI_V3_REBALANCE_FACTOR", "").strip()
+    if not raw:
+        return 0.0
+    try:
+        return float(raw)
+    except ValueError:
+        return 0.0
 
 
 class LinhaiV3Orchestrator:
@@ -61,6 +74,12 @@ class LinhaiV3Orchestrator:
         )
         v3_result = self.v3.recommend_discard(state)
         if v3_result is not None:
+            # 2026-05-13 实验 #4：环境变量 LINHAI_V3_REBALANCE_FACTOR > 0 时
+            # 用 per-candidate houjuu_prob 做 EV 重平衡（独立于 mode / missing_suit）。
+            # 默认 0 = 关闭，行为与之前一致。
+            factor = _rebalance_factor()
+            if factor > 0:
+                v3_result = rebalance_for_2p_houjuu(v3_result, factor)
             if no_adapter_signal:
                 return v3_result
             return adjust_for_2p_linhai(

@@ -346,6 +346,22 @@ class V3SearchService:
                     for item in result.candidate_scores[:15]
                     if item.hai
                 },
+                # 2026-05-13 实验 #4：把 SearchCandidate 暴露的 per-candidate 字段
+                # 完整搬出来，供 two_player_adapter.rebalance_for_2p_houjuu 做 EV 重平衡。
+                # V3 trained for 3 opps → 2P 实际只 1 对手，houjuu 被高估，rebalance
+                # 通过加回 `+ factor * houjuu_prob` 让原本被过度防守压低的候选回升。
+                "candidate_details": {
+                    self._display_tile(self._mod.tile_int_to_str(item.hai)): {
+                        "total_ev": round(item.total_ev, 3),
+                        "agari_prob": round(item.agari_prob, 6),
+                        "houjuu_prob": round(item.houjuu_prob, 6),
+                        "betaori_prob": round(item.betaori_prob, 6),
+                        "defense_score": round(item.defense_score, 3),
+                        "shanten": item.shanten,
+                    }
+                    for item in result.candidate_scores[:15]
+                    if item.hai
+                },
                 "total_ev": round(result.total_ev, 3),
                 "agari_prob": round(result.agari_prob, 6),
                 "tenpai_prob": round(result.tenpai_prob, 6),
