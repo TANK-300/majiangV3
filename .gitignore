@@ -27,3 +27,10 @@ logs/
 # Local eval / export outputs
 artifacts/
 
+# Python virtual environments
+.venv/
+venv/
+.python-version
+
+# IDE
+.idea/encodings.xml

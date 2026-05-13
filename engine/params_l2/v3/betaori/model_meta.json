@@ -1,0 +1,24 @@
+{
+  "task": "betaori",
+  "created_at": "2026-05-11T08:10:19.502729+00:00",
+  "status": "trained",
+  "label_key": "source_meta.betaori_label",
+  "dataset": {
+    "dataset_path": "data/l2/samples_2000.jsonl",
+    "total_records": 57008,
+    "records_with_task_labels": 57008,
+    "label_key_counts": {
+      "best_discard_tile": 57008,
+      "can_win_label": 57008,
+      "score_label": 57008
+    }
+  },
+  "trained_examples": 57008,
+  "skipped_records": 0,
+  "model_file": "engine/params_l2/v3/betaori/v3/betaori/model.json",
+  "model_type": "logistic_regression",
+  "metrics": {
+    "train_accuracy": 0.6831231605823767,
+    "val_accuracy": 0.6858445886686546
+  }
+}
