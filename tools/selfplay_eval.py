@@ -283,7 +283,16 @@ class OrchestratorPolicy(Policy):
 
     def choose_discard(self, game: "SimulatedGame", seat_idx: int) -> DiscardDecision:
         state = game.to_core_state(seat_idx)
-        result = self._orchestrator.recommend(state)
+        seat = game.seats[seat_idx]
+        opp = game.seats[1 - seat_idx]
+        # 把 SimulatedGame 上的缺一门信号 / 2P 模式传给 orchestrator → adapter。
+        # 未开启 missing_suit_enabled 时 missing_suit 为 None，adapter 行为不变。
+        result = self._orchestrator.recommend(
+            state,
+            mode="linhai_2p" if game.missing_suit_enabled else None,
+            missing_suit_self=seat.missing_suit,
+            missing_suit_opp=opp.missing_suit,
+        )
         tile = result.get("tile")
         if not tile or tile not in game.seats[seat_idx].hand:
             # Fallback to heuristic if the engine returned something unusable
@@ -445,8 +454,11 @@ class ReferenceHumanAdapter(Policy):
 
     def choose_discard(self, game: "SimulatedGame", seat_idx: int) -> DiscardDecision:
         state = game.to_core_state(seat_idx)
+        seat = game.seats[seat_idx]
         try:
-            result = self._impl.recommend_discard(state)
+            # B1: 把 SimulatedGame 上的 missing_suit 透传给 reference_human。
+            # 当 missing_suit_enabled=False 时 seat.missing_suit 为 None，此处行为不变。
+            result = self._impl.recommend_discard(state, missing_suit=seat.missing_suit)
         except Exception:
             return HeuristicPolicy().choose_discard(game, seat_idx)
         tile = result.get("tile")
@@ -510,6 +522,9 @@ class Seat:
     # 验收 (spec §3): 临海特殊机制
     redhead_pool: List[str] = field(default_factory=list)  # 开局发的 N 张红头牌
     grab_charge_caught: int = 0                            # 本局已抓冲数
+    # 2P 临海"缺一门"：'w' (万) | 't' (条) | None（不开启此规则）
+    # 开启后胡牌时若手牌中残留此门 → 视为非法胡，直接拒绝。
+    missing_suit: Optional[str] = None
 
 
 @dataclass
@@ -540,8 +555,40 @@ def _build_wall(rng: random.Random) -> List[str]:
     return wall
 
 
+# 2P 临海"缺一门"辅助：返回 tile 的 suit suffix（'w' 万 / 't' 条 / 'z' 字）。
+def _tile_suit_suffix(tile: str) -> str:
+    if tile in {"east", "south", "west", "north", "white", "green", "red"}:
+        return "z"
+    if tile.endswith("w"):
+        return "w"
+    if tile.endswith("t"):
+        return "t"
+    return ""
+
+
+def _is_four_caishen_hu(hand: Sequence[str]) -> bool:
+    """T1.5 四财神直接胡：手牌（含刚摸/刚被荣和的牌）里有 4 张白板 → 天胡。
+    白板=财神=万能牌；持有 4 张时无需满足正常胡型，且不受缺一门校验约束。"""
+    return sum(1 for t in hand if t == WHITE) >= 4
+
+
+def _hand_has_missing_suit(hand: Sequence[str], missing_suit: Optional[str]) -> bool:
+    """胡牌合法性检查：手中存在 missing_suit 的牌则非法。
+    missing_suit=None 时该规则未启用，永远返回 False。"""
+    if not missing_suit:
+        return False
+    return any(_tile_suit_suffix(t) == missing_suit for t in hand)
+
+
 class SimulatedGame:
-    def __init__(self, policies: Sequence[Policy], rng: random.Random, max_turns: int = 200):
+    def __init__(
+        self,
+        policies: Sequence[Policy],
+        rng: random.Random,
+        max_turns: int = 200,
+        *,
+        missing_suit_enabled: bool = False,
+    ):
         assert len(policies) == 2
         self.policies = list(policies)
         self.rng = rng
@@ -550,6 +597,8 @@ class SimulatedGame:
         self.wall: List[str] = []
         self.current_seat: int = 0
         self.result: Optional[GameResult] = None
+        # 开启后 deal() 给每家随机分配 missing_suit，胡牌时校验。
+        self.missing_suit_enabled: bool = bool(missing_suit_enabled)
 
     # -- setup ----------------------------------------------------------- #
 
@@ -564,6 +613,11 @@ class SimulatedGame:
             seat.discards = []
             seat.passed_hu_this_round = False
             seat.grab_charge_caught = 0
+            # 缺一门：每家随机分配 'w' 或 't'。两家可以缺同门，也可以缺不同门。
+            if self.missing_suit_enabled:
+                seat.missing_suit = self.rng.choice(["w", "t"])
+            else:
+                seat.missing_suit = None
         self.current_seat = 0
 
     # -- state bridging ------------------------------------------------- #
@@ -591,7 +645,14 @@ class SimulatedGame:
         opp = self.seats[1 - seat_idx]
         if opp.passed_hu_this_round:
             return False
-        return is_winning_hand(list(opp.hand) + [tile])
+        test_hand = list(opp.hand) + [tile]
+        # T1.5 四财神直接胡：4 白板优先短路，绕过缺一门 + 正常胡型校验。
+        if _is_four_caishen_hu(test_hand):
+            return True
+        # 缺一门：若放炮牌或对手手牌仍含缺门 → 非法胡，无法荣和。
+        if _hand_has_missing_suit(test_hand, opp.missing_suit):
+            return False
+        return is_winning_hand(test_hand)
 
     # 验收 (spec §3.2 抓冲): 按门风返回该 seat 的抓冲牌列表（display 名）
     @staticmethod
@@ -667,8 +728,17 @@ class SimulatedGame:
         tile = self.wall.pop()
         seat.hand.append(tile)
 
-        # Tsumo check
-        if is_winning_hand(seat.hand):
+        # T1.5 四财神直接胡：4 白板优先短路，绕过缺一门 + 正常胡型校验。
+        if _is_four_caishen_hu(seat.hand):
+            return self._make_win_result(
+                winner_idx=seat_idx, loser_idx=None, kind="tsumo",
+                winning_hand=list(seat.hand),
+            )
+        # Tsumo check（缺一门：手中仍有缺门 → 非法胡，跳过）
+        if (
+            not _hand_has_missing_suit(seat.hand, seat.missing_suit)
+            and is_winning_hand(seat.hand)
+        ):
             return self._make_win_result(
                 winner_idx=seat_idx, loser_idx=None, kind="tsumo",
                 winning_hand=list(seat.hand),
@@ -852,6 +922,7 @@ def run_match_with_per_game_chong(
     seed: int = 0,
     swap_sides: bool = True,
     max_turns: int = 200,
+    missing_suit_enabled: bool = False,
 ) -> Tuple[List[int], List[int], "MatchStats"]:
     """Like run_match but also returns per-game chong for both seats.
 
@@ -868,7 +939,10 @@ def run_match_with_per_game_chong(
             policies: List[Policy] = [policy_b, policy_a]
         else:
             policies = [policy_a, policy_b]
-        game = SimulatedGame(policies, rng, max_turns=max_turns)
+        game = SimulatedGame(
+            policies, rng, max_turns=max_turns,
+            missing_suit_enabled=missing_suit_enabled,
+        )
         result = game.run()
         stats.record(result, swap)
         c0 = chong_for_seat(result, 0)
@@ -892,6 +966,7 @@ def run_match(
     swap_sides: bool = True,
     max_turns: int = 200,
     progress: Optional[Callable[[int, int], None]] = None,
+    missing_suit_enabled: bool = False,
 ) -> MatchStats:
     stats = MatchStats()
     for i in range(games):
@@ -901,7 +976,10 @@ def run_match(
             policies: List[Policy] = [policy_b, policy_a]
         else:
             policies = [policy_a, policy_b]
-        game = SimulatedGame(policies, rng, max_turns=max_turns)
+        game = SimulatedGame(
+            policies, rng, max_turns=max_turns,
+            missing_suit_enabled=missing_suit_enabled,
+        )
         result = game.run()
         stats.record(result, swap)
         if progress is not None:

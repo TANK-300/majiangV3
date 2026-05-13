@@ -364,23 +364,29 @@ def test_2p_adapter_missing_suit_alias_accepted() -> None:
         assert r.json()["tile"].endswith("w"), f"alias={alias} 未生效: {r.json()['tile']}"
 
 
-def test_2p_adapter_genbutsu_bonus_promotes_safe_tile() -> None:
-    """对手已经打过的牌（现物）应被 adapter 加分；同等候选时优先打安全牌。"""
+def test_2p_adapter_genbutsu_bonus_disabled_in_normal_mode() -> None:
+    """SAFE_TILE_BONUS 在正常模式下禁用（V3 EV 已含 opp_discards 防御特征，
+    adapter 重复加分会破坏好牌型评分 — 5000 局自对弈验证 avg_chong 4.07→1.15）。
+    现仅在 betaori 模式生效。
+
+    本用例锁定：正常模式下 opp_discards 不应导致 adapter 给该牌额外加分。
+    """
     base_payload = {
         "hand": ["1w", "2w", "3w", "4w", "5w", "6w", "1t", "2t", "3t", "4t", "5t", "6t", "7t"],
         "wind_seat": 0,
         "wall_remaining": 50,
     }
     r1 = client.post("/ai/recommend", json=base_payload)
-    assert r1.status_code == 200, r1.text
+    assert r1.status_code == 200
     base_tile = r1.json()["tile"]
-
-    # 带 opponent_discards 含基线推荐牌：该牌 EV 应被显著抬高
-    r2 = client.post("/ai/recommend", json={**base_payload, "opponent_discards": [base_tile]})
-    assert r2.status_code == 200, r2.text
-    s2 = r2.json()["meta"]["scores"].get(base_tile, 0)
     s1 = r1.json()["meta"]["scores"].get(base_tile, 0)
-    assert s2 > s1, f"genbutsu bonus 未生效: base={s1}, with_opp_discard={s2}"
+
+    r2 = client.post("/ai/recommend", json={**base_payload, "opponent_discards": [base_tile]})
+    assert r2.status_code == 200
+    s2 = r2.json()["meta"]["scores"].get(base_tile, 0)
+    # SAFE_TILE_BONUS=0 → adapter 不加分；V3 EV 自身可能因 opp_discards 微调，但不会出现 +1000 量级偏移。
+    diff = abs(s2 - s1)
+    assert diff < 500, f"adapter 不应在正常模式给 +1000 量级偏置: base={s1}, with_opp_discard={s2}, diff={diff}"
 
 
 def test_2p_adapter_betaori_picks_safe_tile_late_game() -> None:

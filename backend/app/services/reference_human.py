@@ -75,6 +75,19 @@ def _suit_of(tile: str) -> str:
     return "z"
 
 
+def _normalize_missing_suit(s: Optional[str]) -> Optional[str]:
+    """缺一门别名归一：w/m/万/wan/characters → 'm'； t/s/条/索/bamboo → 's'.
+    None / 未知 → None（不启用）。"""
+    if not s:
+        return None
+    v = s.strip().lower()
+    if v in ("m", "w", "wan", "char", "characters", "万"):
+        return "m"
+    if v in ("s", "t", "tiao", "bamboo", "sozu", "条", "索"):
+        return "s"
+    return None
+
+
 def _detect_hunyise_target(hand: List[str]) -> Optional[str]:
     """Return suit prefix ('m'|'p'|'s') if hand has ≥ N same-suit tiles, else None."""
     suit_counts: Counter = Counter()
@@ -123,7 +136,41 @@ class ReferenceHumanPolicy:
 
     # --- core: discard ---
 
-    def recommend_discard(self, state: GameState) -> Dict:
+    def recommend_discard(self, state: GameState, *, missing_suit: Optional[str] = None) -> Dict:
+        # Step 0: 缺一门强制清门——真人在这条规则下没有选择，必须先把缺门牌打掉。
+        # 优先级最高，跳过防守 / 番数倾向 / 错牌噪声等所有后续步骤。
+        ms = _normalize_missing_suit(missing_suit)
+        if ms:
+            hand_codes = [normalize_code(t) for t in state.current_player().hand]
+            ms_hand = [t for t in hand_codes if _suit_of(t) == ms]
+            if ms_hand:
+                # B1 现物优先：清缺门时若有对手河里出过的现物（绝对不会放炮），先打它。
+                player_wind = state.current_player().wind
+                opp_discards = set()
+                for w, snap in state.players.items():
+                    if w == player_wind:
+                        continue
+                    for t in snap.discards:
+                        opp_discards.add(normalize_code(t))
+                ms_genbutsu = [t for t in ms_hand if t in opp_discards]
+                pool = ms_genbutsu if ms_genbutsu else ms_hand
+
+                # 在候选池中选 V2 EV 最低（最不可惜）的；退化字典序保证确定性。
+                v2_seed = self.v2.recommend_discard(state) or self.strategy.recommend_discard(state)
+                cand = (v2_seed.get("candidate_scores", {}) if v2_seed else {})
+                cand_pool = {
+                    t: float(score) for t, score in cand.items()
+                    if normalize_code(t) in set(pool)
+                }
+                pick = min(cand_pool, key=cand_pool.get) if cand_pool else sorted(pool)[0]
+                return {
+                    "engine": "reference_human",
+                    "tile": normalize_code(pick),
+                    "chosen_by": "missing_suit_clear" + ("_genbutsu" if ms_genbutsu else ""),
+                    "candidate_scores": {pick: cand_pool.get(pick, 0.0)},
+                    "houjuu_prob": 0.0,
+                }
+
         # Step 1: ask V2 for baseline EV decision; fall back to strategy heuristic
         # if V2 .so is not loaded (e.g. dev box without boost).
         result = self.v2.recommend_discard(state)

@@ -66,6 +66,8 @@ from tools.selfplay_eval import (  # noqa: E402
     HeuristicPolicy,
     Policy,
     SimulatedGame,
+    _hand_has_missing_suit,
+    _is_four_caishen_hu,
     is_winning_hand,
     policy_factory,
 )
@@ -198,8 +200,18 @@ class SamplingGame(SimulatedGame):
         tile = self.wall.pop()
         seat.hand.append(tile)
 
+        # T1.5 四财神直接胡：与 SimulatedGame.play_one_turn 对齐，4 白板优先短路。
+        if _is_four_caishen_hu(seat.hand):
+            return self._make_win_result(
+                winner_idx=seat_idx, loser_idx=None, kind="tsumo",
+                winning_hand=list(seat.hand),
+            )
         # Tsumo check first; if we tsumo we never emit a discard sample here.
-        if is_winning_hand(seat.hand):
+        # 缺一门：手中仍含缺门 → 非法胡，跳过。
+        if (
+            not _hand_has_missing_suit(seat.hand, seat.missing_suit)
+            and is_winning_hand(seat.hand)
+        ):
             # Use the parent class helper so winning_hand / qingyise / hunyise /
             # ziyise are populated for downstream score_label computation.
             return self._make_win_result(
@@ -351,6 +363,7 @@ def run_sample_generation(
     swap_sides: bool = True,
     max_turns: int = 200,
     output_path: Optional[Path] = None,
+    missing_suit_enabled: bool = False,
 ) -> GenerationStats:
     stats = GenerationStats()
     fout = output_path.open("w", encoding="utf-8") if output_path is not None else None
@@ -362,7 +375,10 @@ def run_sample_generation(
                 policies: List[Policy] = [policy_b, policy_a]
             else:
                 policies = [policy_a, policy_b]
-            game = SamplingGame(policies, rng, game_index=i, max_turns=max_turns)
+            game = SamplingGame(
+                policies, rng, game_index=i, max_turns=max_turns,
+                missing_suit_enabled=missing_suit_enabled,
+            )
             result = game.run()
             total_steps = len(game.steps)
             if fout is not None:
@@ -384,6 +400,9 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0, help="Base RNG seed")
     parser.add_argument("--max-turns", type=int, default=200, help="Max turns per game before draw")
     parser.add_argument("--no-swap", action="store_true", help="Disable side-swapping between games")
+    parser.add_argument("--missing-suit-enabled", action="store_true",
+                        help="Enable 2P 临海 missing-suit rule: each seat is randomly "
+                             "assigned 'w' or 't' as missing suit; hu requires hand to be free of it.")
     parser.add_argument("--output", required=True, help="Output JSONL path for (state, action, outcome) samples")
     args = parser.parse_args()
 
@@ -403,6 +422,7 @@ def main() -> None:
         swap_sides=not args.no_swap,
         max_turns=args.max_turns,
         output_path=output_path,
+        missing_suit_enabled=args.missing_suit_enabled,
     )
     elapsed = time.time() - start
 

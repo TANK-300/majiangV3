@@ -50,8 +50,19 @@ class LinhaiV3Orchestrator:
             missing_suit_self: 自家缺一门（w / t / z 或别名）。
             missing_suit_opp: 对手缺一门。
         """
+        # 2026-05-13 实验 #1：无任何 2P 信号时跳过 adapter，直接返回 V3 原始结果。
+        # 假设：always-on 的"孤张字牌 +800" / betaori 等规则在 V3 已有 EV 上是双重计分，
+        # 把 V3 训练好的字牌策略污染了——4-28 基线 84.8% → 5-12 当前 76.8% (-8pp)。
+        # 缺一门 / 显式 mode="linhai_2p" 时 adapter 仍然运行。
+        no_adapter_signal = (
+            mode is None
+            and missing_suit_self is None
+            and missing_suit_opp is None
+        )
         v3_result = self.v3.recommend_discard(state)
         if v3_result is not None:
+            if no_adapter_signal:
+                return v3_result
             return adjust_for_2p_linhai(
                 v3_result,
                 state,
@@ -61,6 +72,8 @@ class LinhaiV3Orchestrator:
             )
         v2_result = self.v2.recommend_discard(state)
         if v2_result is not None:
+            if no_adapter_signal:
+                return v2_result
             return adjust_for_2p_linhai(
                 v2_result,
                 state,

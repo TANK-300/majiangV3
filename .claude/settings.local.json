@@ -77,7 +77,11 @@
       "Bash(.venv/bin/python -m pytest tests/python/test_ai_app_compatibility.py tests/python/test_engine_status_version.py -x -q)",
       "Bash(.venv/bin/pip install *)",
       "Bash(lsof -tiTCP:8000 -sTCP:LISTEN)",
-      "Bash(.venv/bin/python -m pytest tests/python/test_ai_app_compatibility.py tests/python/test_engine_status_version.py -q)"
+      "Bash(.venv/bin/python -m pytest tests/python/test_ai_app_compatibility.py tests/python/test_engine_status_version.py -q)",
+      "Bash(.venv/bin/python tools/selfplay_sample.py --help)",
+      "Bash(.venv/bin/python tools/train_neural.py --help)",
+      "Bash(nohup python3 *)",
+      "Bash(echo \"PID=$!\")"
     ]
   }
 }

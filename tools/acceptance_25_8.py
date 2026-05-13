@@ -47,6 +47,7 @@ def run_one_seed(
     policy_a_spec: str,
     policy_b_spec: str,
     max_turns: int,
+    missing_suit_enabled: bool = False,
 ) -> Dict:
     rng_a = random.Random(seed * 7 + 1)
     rng_b = random.Random(seed * 7 + 2)
@@ -54,6 +55,7 @@ def run_one_seed(
     policy_b = policy_factory(policy_b_spec, rng_b)
     chongs_a, _chongs_b, stats = run_match_with_per_game_chong(
         policy_a, policy_b, games, seed=seed, max_turns=max_turns,
+        missing_suit_enabled=missing_suit_enabled,
     )
     windows = settle_windows(chongs_a, window)
     stats_dict = stats.as_dict(policy_a_spec, policy_b_spec)
@@ -122,6 +124,8 @@ def main() -> int:
     ap.add_argument("--policy-b", default="reference_human",
                     help="Reference opponent (default ReferenceHumanPolicy)")
     ap.add_argument("--max-turns", type=int, default=200)
+    ap.add_argument("--missing-suit", action="store_true",
+                    help="Enable 2P linhai missing-suit (缺一门) rule")
     ap.add_argument("--output", default="docs/release/acceptance_report.json")
     args = ap.parse_args()
 
@@ -134,6 +138,7 @@ def main() -> int:
             policy_a_spec=args.policy_a,
             policy_b_spec=args.policy_b,
             max_turns=args.max_turns,
+            missing_suit_enabled=args.missing_suit,
         )
         per_seed.append(result)
         print(
@@ -157,6 +162,7 @@ def main() -> int:
         "games_per_seed": args.games_per_seed,
         "policy_a": args.policy_a,
         "policy_b": args.policy_b,
+        "missing_suit": bool(args.missing_suit),
     }
 
     out_path = Path(args.output)
