@@ -35,7 +35,7 @@ _MELD_TYPE_ALIAS: Dict[str, str] = {
     "minkan": "ming_gang", "ankan": "an_gang", "kakan": "bu_gang",
     "ming_kan": "ming_gang", "an_kan": "an_gang", "bu_kan": "bu_gang",
     # 中文/拼音别名
-    "吾": "peng", "碰": "peng", "吃": "chi",
+    "碰": "peng", "吃": "chi",
     "明杠": "ming_gang", "暗杠": "an_gang", "补杠": "bu_gang",
 }
 

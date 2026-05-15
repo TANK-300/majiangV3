@@ -2,17 +2,17 @@
 # 启动 majiangV3 FastAPI 服务（V3 引擎 + heuristic 兜底）
 #
 # 用法:
-#   ./start.sh            # 默认 0.0.0.0:8000
+#   ./start.sh            # 默认 0.0.0.0:9000
 #   ./start.sh 8002       # 指定端口
 #   PORT=8001 ./start.sh  # 环境变量指定端口
-#   KILL_PORT=1 ./start.sh 8000   # 端口被占用时自动 kill 占用进程
+#   KILL_PORT=1 ./start.sh 9000   # 端口被占用时自动 kill 占用进程
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
-PORT="${1:-${PORT:-8000}}"
+PORT="${1:-${PORT:-9000}}"
 HOST="${HOST:-0.0.0.0}"
 
 VENV_PY="$ROOT/.venv/bin/python"
